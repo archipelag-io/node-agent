@@ -1,0 +1,49 @@
+[tools]
+rust = "1.83"
+
+[env]
+RUST_LOG = "info"
+
+[tasks.build]
+description = "Build the agent in release mode"
+run = "cargo build --release"
+
+[tasks.dev]
+description = "Build and run in debug mode"
+run = "cargo run"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo test"
+
+[tasks."test:job"]
+description = "Run a test job (requires llm-chat container)"
+run = "cargo run -- --test-job 'What is 2+2?'"
+
+[tasks.check]
+description = "Run cargo check"
+run = "cargo check"
+
+[tasks.clippy]
+description = "Run clippy lints"
+run = "cargo clippy -- -D warnings"
+
+[tasks.fmt]
+description = "Format code"
+run = "cargo fmt"
+
+[tasks."fmt:check"]
+description = "Check formatting"
+run = "cargo fmt -- --check"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "cargo clean"
+
+[tasks.doc]
+description = "Generate documentation"
+run = "cargo doc --no-deps --open"
+
+[tasks.ci]
+description = "Run all CI checks"
+depends = ["fmt:check", "clippy", "test"]
