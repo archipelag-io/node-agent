@@ -60,8 +60,10 @@ pub struct Heartbeat {
 #[derive(Debug, Deserialize)]
 pub struct AssignJob {
     pub job_id: String,
+    #[allow(dead_code)]
     pub workload_id: String,
     pub input: serde_json::Value,
+    #[allow(dead_code)]
     pub lease_expires: i64,
     /// Runtime type: "container" or "wasm"
     #[serde(default = "default_runtime_type")]
@@ -70,6 +72,7 @@ pub struct AssignJob {
     pub container_image: Option<String>,
     /// For WASM workloads
     pub wasm_url: Option<String>,
+    #[allow(dead_code)]
     pub wasm_hash: Option<String>,
 }
 
@@ -278,6 +281,7 @@ impl NatsAgent {
     }
 
     /// Get the host ID
+    #[allow(dead_code)]
     pub fn host_id(&self) -> &str {
         &self.host_id
     }

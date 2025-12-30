@@ -45,7 +45,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    let subscriber = FmtSubscriber::builder()
+    FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .init();

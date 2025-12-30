@@ -80,7 +80,7 @@ pub async fn run_test_job(docker: &Docker, config: &AgentConfig, prompt: &str) -
                         error!("Workload error: {}", message);
                     }
                 },
-                Err(e) => {
+                Err(_) => {
                     // Not valid JSON, might be raw output
                     info!("Raw output: {}", line);
                 }

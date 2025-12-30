@@ -13,7 +13,8 @@ pub struct AgentConfig {
     /// Coordinator settings
     pub coordinator: CoordinatorConfig,
 
-    /// Docker settings
+    /// Docker settings (reserved for future custom socket config)
+    #[allow(dead_code)]
     pub docker: DockerConfig,
 
     /// Workload settings
@@ -26,6 +27,8 @@ pub struct CoordinatorConfig {
     pub nats_url: String,
 }
 
+/// Docker configuration (reserved for future use)
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct DockerConfig {
     /// Docker socket path (default: unix:///var/run/docker.sock)

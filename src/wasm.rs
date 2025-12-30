@@ -27,7 +27,8 @@ pub struct WasmConfig {
     pub module_path: String,
     /// JSON input to pass via stdin
     pub input: String,
-    /// Maximum memory in bytes (default: 256MB)
+    /// Maximum memory in bytes (default: 256MB) - reserved for future use
+    #[allow(dead_code)]
     pub max_memory_bytes: u64,
     /// Maximum fuel (instructions) - None for unlimited
     pub max_fuel: Option<u64>,
@@ -233,6 +234,7 @@ struct ExecutionResult {
 #[derive(Debug)]
 pub struct ModuleInfo {
     pub exports: Vec<String>,
+    #[allow(dead_code)]
     pub imports: Vec<String>,
     pub has_start: bool,
 }

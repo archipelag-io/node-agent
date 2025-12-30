@@ -15,6 +15,7 @@ pub struct ChatInput {
 }
 
 /// Input to an image generation workload
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ImageGenInput {
     pub prompt: String,
@@ -62,8 +63,10 @@ pub enum WorkloadOutput {
     Error { message: String },
 }
 
+/// Token usage statistics from LLM workloads
 #[derive(Debug, Deserialize, Clone)]
 pub struct Usage {
+    #[allow(dead_code)]
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
 }
