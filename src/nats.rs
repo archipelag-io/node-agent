@@ -62,7 +62,7 @@ pub struct Heartbeat {
 pub struct AssignJob {
     pub job_id: String,
     #[allow(dead_code)]
-    pub workload_id: String,
+    pub workload_id: serde_json::Value,  // Can be string or integer
     pub input: serde_json::Value,
     #[allow(dead_code)]
     pub lease_expires: i64,
@@ -331,7 +331,15 @@ impl NatsAgent {
 
 /// Parse a job assignment message
 pub fn parse_job_assignment(msg: &Message) -> Result<AssignJob> {
-    serde_json::from_slice(&msg.payload).context("Failed to parse job assignment")
+    match serde_json::from_slice(&msg.payload) {
+        Ok(job) => Ok(job),
+        Err(e) => {
+            // Log the actual payload for debugging
+            let payload_str = String::from_utf8_lossy(&msg.payload);
+            tracing::error!("Failed to parse job assignment: {} - Payload: {}", e, payload_str);
+            Err(e).context("Failed to parse job assignment")
+        }
+    }
 }
 
 /// Get current timestamp in milliseconds

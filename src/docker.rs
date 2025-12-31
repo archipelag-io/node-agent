@@ -99,6 +99,7 @@ pub async fn run_container_streaming(
         image: Some(config.image.clone()),
         host_config: Some(host_config),
         open_stdin: Some(true),
+        stdin_once: Some(true),  // Close stdin after first detach
         attach_stdin: Some(true),
         attach_stdout: Some(true),
         attach_stderr: Some(true),
@@ -140,14 +141,21 @@ pub async fn run_container_streaming(
         .await
         .context("Failed to start container")?;
 
+    // Small delay to let container process start before sending input
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     // Send input to stdin
     use tokio::io::AsyncWriteExt;
+    debug!("Sending input to container: {} bytes", config.input.len());
     attached
         .input
         .write_all(config.input.as_bytes())
         .await
         .context("Failed to write to container stdin")?;
+    // Ensure newline at end for JSON parsers
+    attached.input.write_all(b"\n").await?;
     attached.input.shutdown().await?;
+    debug!("Input sent and stdin closed");
 
     // Run container with timeout
     let run_result = timeout(timeout_duration, async {
