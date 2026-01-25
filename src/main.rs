@@ -10,6 +10,7 @@ mod docker;
 mod executor;
 mod messages;
 mod nats;
+mod state;
 mod wasm;
 
 use anyhow::Result;

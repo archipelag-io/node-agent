@@ -6,6 +6,7 @@ use crate::config::AgentConfig;
 use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
 use crate::nats::{self, AssignJob, CancelJob, HostCapabilities, NatsAgent};
+use crate::state::StateManager;
 use crate::wasm::{WasmConfig, WasmExecutor, WasmOutput};
 use anyhow::{Context, Result};
 use bollard::Docker;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::System;
 use tokio::select;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Maximum backoff delay for reconnection attempts (30 seconds)
@@ -34,6 +35,7 @@ pub struct Agent {
     config: AgentConfig,
     docker: Docker,
     nats: NatsAgent,
+    state: Arc<RwLock<StateManager>>,
     active_jobs: Arc<AtomicU32>,
     shutdown: Arc<AtomicBool>,
     /// Map of job_id -> cancel sender for running jobs
@@ -51,6 +53,10 @@ impl Agent {
 
         info!("Host ID: {}", host_id);
 
+        // Load persistent state
+        let state = StateManager::new().await?;
+        info!("State loaded (paired: {})", state.is_paired());
+
         // Connect to NATS
         let nats = NatsAgent::connect(&config.coordinator.nats_url, host_id).await?;
 
@@ -58,6 +64,7 @@ impl Agent {
             config,
             docker,
             nats,
+            state: Arc::new(RwLock::new(state)),
             active_jobs: Arc::new(AtomicU32::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             job_cancellers: Arc::new(DashMap::new()),
@@ -282,8 +289,14 @@ impl Agent {
 
     /// Check if host needs pairing and request a pairing code if so
     async fn check_and_request_pairing(&self) {
-        // TODO: Check if host is already paired (could store in local config)
-        // For now, always request pairing on startup
+        // Check if already paired locally
+        {
+            let state = self.state.read().await;
+            if state.is_paired() {
+                info!("Host is already paired (from local state)");
+                return;
+            }
+        }
 
         match self.nats.request_pairing().await {
             Ok(response) => {
@@ -303,6 +316,11 @@ impl Agent {
                 } else if let Some(error) = response.error {
                     if error.contains("already paired") {
                         info!("Host is already paired to an account");
+                        // Mark as paired in local state
+                        let mut state = self.state.write().await;
+                        if let Err(e) = state.set_paired(None).await {
+                            warn!("Failed to save pairing state: {}", e);
+                        }
                     } else {
                         warn!("Pairing request failed: {}", error);
                     }
@@ -328,11 +346,12 @@ impl Agent {
         let nats = self.nats.clone();
         let config = self.config.clone();
         let shutdown = self.shutdown.clone();
+        let state = self.state.clone();
 
         tokio::spawn(async move {
             let job_id = job.job_id.clone();
 
-            if let Err(e) = execute_job(&docker, &nats, &config, job, shutdown, cancel_rx).await {
+            if let Err(e) = execute_job(&docker, &nats, &config, &state, job, shutdown, cancel_rx).await {
                 error!("Job {} failed: {}", job_id, e);
                 let _ = nats
                     .publish_status(&job_id, "failed", Some(e.to_string()))
@@ -349,6 +368,7 @@ async fn execute_job(
     docker: &Docker,
     nats: &NatsAgent,
     config: &AgentConfig,
+    state: &Arc<RwLock<StateManager>>,
     job: AssignJob,
     _shutdown: Arc<AtomicBool>,
     cancel_rx: watch::Receiver<bool>,
@@ -366,13 +386,18 @@ async fn execute_job(
 
     // Route based on runtime type
     match job.runtime_type.as_str() {
-        "wasm" => execute_wasm_job(nats, &job, cancel_rx).await,
+        "wasm" => execute_wasm_job(nats, state, &job, cancel_rx).await,
         "container" | _ => execute_container_job(docker, nats, config, &job, cancel_rx).await,
     }
 }
 
 /// Execute a WASM workload
-async fn execute_wasm_job(nats: &NatsAgent, job: &AssignJob, mut cancel_rx: watch::Receiver<bool>) -> Result<()> {
+async fn execute_wasm_job(
+    nats: &NatsAgent,
+    state: &Arc<RwLock<StateManager>>,
+    job: &AssignJob,
+    mut cancel_rx: watch::Receiver<bool>,
+) -> Result<()> {
     let job_id = &job.job_id;
 
     let wasm_url = job
@@ -382,9 +407,19 @@ async fn execute_wasm_job(nats: &NatsAgent, job: &AssignJob, mut cancel_rx: watc
 
     info!("Executing WASM workload: {}", wasm_url);
 
-    // TODO: Download WASM module from URL and cache it
-    // For now, assume wasm_url is a local path for testing
-    let wasm_path = wasm_url.clone();
+    // Get WASM module path (download and cache if URL, or use directly if local path)
+    let wasm_path = if wasm_url.starts_with("http://") || wasm_url.starts_with("https://") {
+        // Download and cache the WASM module
+        let state_guard = state.read().await;
+        let cached_path = state_guard
+            .get_wasm_module(wasm_url, job.wasm_hash.as_deref())
+            .await
+            .context("Failed to download/cache WASM module")?;
+        cached_path.to_string_lossy().to_string()
+    } else {
+        // Assume it's a local path
+        wasm_url.clone()
+    };
 
     // Prepare input
     let input_json = serde_json::to_string(&job.input).context("Failed to serialize job input")?;
