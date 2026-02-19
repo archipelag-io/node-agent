@@ -3,10 +3,12 @@
 //! Handles connection to NATS, job subscriptions, and message publishing.
 
 use anyhow::{Context, Result};
+use async_nats::jetstream;
 use async_nats::{Client, ConnectOptions, Message, Subscriber};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// NATS subject patterns
 pub mod subjects {
@@ -288,8 +290,81 @@ impl NatsAgent {
         Ok(())
     }
 
-    /// Subscribe to job assignments for this host
-    pub async fn subscribe_jobs(&self) -> Result<Subscriber> {
+    /// Subscribe to job assignments for this host.
+    ///
+    /// Tries JetStream pull consumer first (stream JOBS, consumer host-{id}).
+    /// Falls back to core NATS subscription if the stream doesn't exist.
+    pub async fn subscribe_jobs(&self) -> Result<JobSubscription> {
+        match self.try_jetstream_subscribe().await {
+            Ok(js_sub) => {
+                info!(
+                    "Subscribed to job assignments via JetStream (host-{})",
+                    &self.host_id[..8]
+                );
+                Ok(js_sub)
+            }
+            Err(e) => {
+                warn!(
+                    "JetStream subscribe failed ({}), falling back to core NATS",
+                    e
+                );
+                let subject = subjects::jobs(&self.host_id);
+                let subscriber = self
+                    .client
+                    .subscribe(subject.clone())
+                    .await
+                    .context("Failed to subscribe to jobs")?;
+
+                info!("Subscribed to job assignments on {} (core NATS)", subject);
+                Ok(JobSubscription::Core(subscriber))
+            }
+        }
+    }
+
+    /// Attempt to set up a JetStream pull consumer for durable job delivery.
+    async fn try_jetstream_subscribe(&self) -> Result<JobSubscription> {
+        let js = jetstream::new(self.client.clone());
+
+        // Check if the JOBS stream exists
+        let stream = js
+            .get_stream("JOBS")
+            .await
+            .context("JOBS stream not found")?;
+
+        let consumer_name = format!("host-{}", self.host_id);
+        let filter_subject = subjects::jobs(&self.host_id);
+
+        // Get or create the durable consumer for this host
+        let consumer = match stream.get_consumer(&consumer_name).await {
+            Ok(consumer) => consumer,
+            Err(_) => {
+                // Create durable pull consumer for this host
+                let config = jetstream::consumer::pull::Config {
+                    durable_name: Some(consumer_name.clone()),
+                    ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                    filter_subject: filter_subject.clone(),
+                    max_deliver: 5,
+                    ack_wait: Duration::from_secs(60),
+                    ..Default::default()
+                };
+
+                stream
+                    .create_consumer(config)
+                    .await
+                    .context("Failed to create JetStream consumer")?
+            }
+        };
+
+        let messages = consumer
+            .messages()
+            .await
+            .context("Failed to get JetStream message stream")?;
+
+        Ok(JobSubscription::JetStream(Box::new(messages)))
+    }
+
+    /// Subscribe to job assignments via core NATS (used for recovery)
+    pub async fn subscribe_jobs_core(&self) -> Result<Subscriber> {
         let subject = subjects::jobs(&self.host_id);
         let subscriber = self
             .client
@@ -514,6 +589,51 @@ impl NatsAgent {
             .context("Failed to parse pairing response")?;
 
         Ok(pairing_response)
+    }
+}
+
+/// Abstraction over core NATS and JetStream subscriptions for job delivery.
+///
+/// When using JetStream, messages are acked after successful job spawn
+/// (not after completion — that would be too late for lease-based delivery).
+pub enum JobSubscription {
+    /// Core NATS subscription (fire-and-forget)
+    Core(Subscriber),
+    /// JetStream pull consumer (at-least-once delivery with explicit ack)
+    JetStream(Box<jetstream::consumer::pull::Stream>),
+}
+
+impl JobSubscription {
+    /// Get the next job assignment message.
+    ///
+    /// For JetStream messages, acks the message immediately on receipt
+    /// (ack-on-spawn, not ack-on-completion).
+    pub async fn next(&mut self) -> Option<Message> {
+        match self {
+            JobSubscription::Core(sub) => sub.next().await,
+            JobSubscription::JetStream(stream) => {
+                loop {
+                    match stream.next().await {
+                        Some(Ok(jetstream_msg)) => {
+                            // Ack immediately — the coordinator stream uses workqueue
+                            // retention, so the message is removed on ack.
+                            // We ack on spawn, not on completion, because the lease
+                            // mechanism handles delivery guarantees after this point.
+                            let inner = jetstream_msg.message.clone();
+                            if let Err(e) = jetstream_msg.ack().await {
+                                warn!("Failed to ack JetStream message: {}", e);
+                            }
+                            return Some(inner);
+                        }
+                        Some(Err(e)) => {
+                            warn!("JetStream message error: {}", e);
+                            continue;
+                        }
+                        None => return None,
+                    }
+                }
+            }
+        }
     }
 }
 

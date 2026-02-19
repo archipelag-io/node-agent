@@ -6,7 +6,7 @@ use crate::cache::CacheManager;
 use crate::config::AgentConfig;
 use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
-use crate::nats::{self, AssignJob, CancelJob, HostCapabilities, NatsAgent};
+use crate::nats::{self, AssignJob, CancelJob, HostCapabilities, JobSubscription, NatsAgent};
 use crate::security::registry::RegistryAllowlist;
 use crate::security::signing::SignatureVerifier;
 use crate::state::StateManager;
@@ -159,8 +159,9 @@ impl Agent {
         // Create channel for job completion notifications
         let (job_done_tx, mut job_done_rx) = mpsc::channel::<String>(32);
 
-        // Subscribe to job assignments
+        // Subscribe to job assignments (JetStream with core NATS fallback)
         let mut job_subscriber = self.nats.subscribe_jobs().await?;
+        info!("Job subscription established");
 
         // Subscribe to cancel requests
         let mut cancel_subscriber = self.nats.subscribe_cancel().await?;
@@ -184,8 +185,16 @@ impl Agent {
                         // If heartbeats are failing, subscription might be stale
                         if consecutive_failures >= 3 {
                             warn!("Multiple heartbeat failures, attempting to resubscribe...");
-                            match self.recover_subscription(&capabilities, &mut job_subscriber).await {
+                            let mut core_sub = match self.nats.subscribe_jobs_core().await {
+                                Ok(sub) => sub,
+                                Err(e) => {
+                                    error!("Failed to create recovery subscriber: {}", e);
+                                    continue;
+                                }
+                            };
+                            match self.recover_subscription(&capabilities, &mut core_sub).await {
                                 Ok(()) => {
+                                    job_subscriber = JobSubscription::Core(core_sub);
                                     consecutive_failures = 0;
                                     info!("Successfully recovered subscription");
                                 }
@@ -214,15 +223,23 @@ impl Agent {
                             }
                         }
                         None => {
-                            // Subscription closed - need to recover
+                            // Subscription closed - need to recover with core NATS
                             warn!("Job subscription closed, attempting to recover...");
-                            match self.recover_subscription(&capabilities, &mut job_subscriber).await {
+                            // Recover into a core NATS subscriber
+                            let mut core_sub = match self.nats.subscribe_jobs_core().await {
+                                Ok(sub) => sub,
+                                Err(e) => {
+                                    error!("Failed initial recovery: {}", e);
+                                    continue;
+                                }
+                            };
+                            match self.recover_subscription(&capabilities, &mut core_sub).await {
                                 Ok(()) => {
-                                    info!("Successfully recovered subscription");
+                                    job_subscriber = JobSubscription::Core(core_sub);
+                                    info!("Successfully recovered subscription (core NATS)");
                                 }
                                 Err(e) => {
                                     error!("Failed to recover subscription after retries: {}", e);
-                                    // Continue loop - will try again on next iteration
                                 }
                             }
                         }
@@ -312,8 +329,8 @@ impl Agent {
                 continue;
             }
 
-            // Try to resubscribe
-            match self.nats.subscribe_jobs().await {
+            // Try to resubscribe (core NATS for recovery)
+            match self.nats.subscribe_jobs_core().await {
                 Ok(new_subscriber) => {
                     *subscriber = new_subscriber;
                     info!(
@@ -726,6 +743,7 @@ const LEASE_RENEWAL_INTERVAL_SECS: u64 = 30;
 const LEASE_EXTENSION_SECS: u64 = 60;
 
 /// Execute a container workload
+#[allow(clippy::too_many_arguments)]
 async fn execute_container_job(
     docker: &Docker,
     nats: &NatsAgent,
