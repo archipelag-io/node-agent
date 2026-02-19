@@ -1,24 +1,29 @@
 [tools]
-rust = "1.83"
+rust = "stable"
 
 [env]
 RUST_LOG = "info"
+RUST_BACKTRACE = "1"
 
 [tasks.build]
-description = "Build the agent in release mode"
+description = "Build in release mode"
 run = "cargo build --release"
 
 [tasks.dev]
 description = "Build and run in debug mode"
 run = "cargo run"
 
+[tasks."dev:release"]
+description = "Build and run in release mode"
+run = "cargo run --release"
+
 [tasks.test]
 description = "Run tests"
 run = "cargo test"
 
-[tasks."test:job"]
-description = "Run a test job (requires llm-chat container)"
-run = "cargo run -- --test-job 'What is 2+2?'"
+[tasks."test:verbose"]
+description = "Run tests with output"
+run = "cargo test -- --nocapture"
 
 [tasks.check]
 description = "Run cargo check"
@@ -41,9 +46,17 @@ description = "Clean build artifacts"
 run = "cargo clean"
 
 [tasks.doc]
-description = "Generate documentation"
+description = "Generate and open documentation"
 run = "cargo doc --no-deps --open"
 
 [tasks.ci]
 description = "Run all CI checks"
 depends = ["fmt:check", "clippy", "test"]
+
+[tasks.install]
+description = "Install binary locally"
+run = "cargo install --path ."
+
+[tasks.bench]
+description = "Run benchmarks"
+run = "cargo bench"

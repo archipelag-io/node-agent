@@ -17,7 +17,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Cache configuration
-#[derive(Debug, Deserialize, Clone, Default)]
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CacheConfig {
     /// Enable pre-pulling of popular images on startup
     #[serde(default)]
@@ -34,6 +35,17 @@ pub struct CacheConfig {
     /// TTL for warm container tracking (seconds)
     #[serde(default = "default_warm_ttl_seconds")]
     pub warm_ttl_seconds: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enable_preload: false,
+            preload_images: Vec::new(),
+            max_cached_images: default_max_cached_images(),
+            warm_ttl_seconds: default_warm_ttl_seconds(),
+        }
+    }
 }
 
 fn default_max_cached_images() -> usize {
@@ -54,6 +66,7 @@ pub struct CachedImage {
     /// Size in bytes
     pub size_bytes: i64,
     /// When the image was last used
+    #[serde(skip)]
     pub last_used: Instant,
     /// Number of times this image has been used
     pub use_count: u64,
@@ -67,6 +80,7 @@ pub struct WarmWorkload {
     /// Container image
     pub image: String,
     /// When this workload was last run
+    #[serde(skip)]
     pub last_run: Instant,
     /// Total runs of this workload
     pub run_count: u64,
@@ -95,6 +109,7 @@ pub struct CacheManager {
     warm_workloads: Arc<RwLock<HashMap<String, WarmWorkload>>>,
 }
 
+#[allow(dead_code)]
 impl CacheManager {
     /// Create a new cache manager
     pub fn new(docker: Docker, config: CacheConfig) -> Self {
@@ -115,7 +130,10 @@ impl CacheManager {
 
         // Pre-pull configured images
         if self.config.enable_preload && !self.config.preload_images.is_empty() {
-            info!("Pre-pulling {} configured images...", self.config.preload_images.len());
+            info!(
+                "Pre-pulling {} configured images...",
+                self.config.preload_images.len()
+            );
             for image in &self.config.preload_images {
                 match self.ensure_image(image).await {
                     Ok(_) => info!("Pre-pulled image: {}", image),
@@ -150,19 +168,17 @@ impl CacheManager {
         cache.clear();
 
         for image in images {
-            // Get the first repo tag as the image name
-            if let Some(repo_tags) = &image.repo_tags {
-                for tag in repo_tags {
-                    if tag != "<none>:<none>" {
-                        let cached = CachedImage {
-                            image: tag.clone(),
-                            digest: image.id.clone(),
-                            size_bytes: image.size,
-                            last_used: Instant::now(),
-                            use_count: 0,
-                        };
-                        cache.insert(tag.clone(), cached);
-                    }
+            // Get the repo tags as the image names
+            for tag in &image.repo_tags {
+                if tag != "<none>:<none>" {
+                    let cached = CachedImage {
+                        image: tag.clone(),
+                        digest: Some(image.id.clone()),
+                        size_bytes: image.size,
+                        last_used: Instant::now(),
+                        use_count: 0,
+                    };
+                    cache.insert(tag.clone(), cached);
                 }
             }
         }
@@ -335,7 +351,7 @@ impl CacheManager {
 
             // Additional points based on use count
             if let Some(cached) = self.get_cached_image(image).await {
-                score += (cached.use_count.min(20) as u32) * 1; // Up to 20 more points
+                score += cached.use_count.min(20) as u32; // Up to 20 more points
             }
         }
 
@@ -354,5 +370,84 @@ mod tests {
         assert!(config.preload_images.is_empty());
         assert_eq!(config.max_cached_images, 20);
         assert_eq!(config.warm_ttl_seconds, 3600);
+    }
+
+    #[test]
+    fn test_cache_config_deserialization() {
+        let json = r#"{
+            "enable_preload": true,
+            "preload_images": ["image1:latest", "image2:v1"],
+            "max_cached_images": 50,
+            "warm_ttl_seconds": 7200
+        }"#;
+        let config: CacheConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enable_preload);
+        assert_eq!(config.preload_images.len(), 2);
+        assert_eq!(config.max_cached_images, 50);
+        assert_eq!(config.warm_ttl_seconds, 7200);
+    }
+
+    #[test]
+    fn test_cache_config_partial_deserialization() {
+        // Only specifying some fields should use defaults for the rest
+        let json = r#"{"enable_preload": true}"#;
+        let config: CacheConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enable_preload);
+        assert!(config.preload_images.is_empty()); // default
+        assert_eq!(config.max_cached_images, 20); // default
+        assert_eq!(config.warm_ttl_seconds, 3600); // default
+    }
+
+    #[test]
+    fn test_cache_stats_default() {
+        let stats = CacheStats::default();
+        assert_eq!(stats.cached_image_count, 0);
+        assert_eq!(stats.cached_size_mb, 0);
+        assert_eq!(stats.warm_workload_count, 0);
+        assert!(stats.warm_workload_ids.is_empty());
+    }
+
+    #[test]
+    fn test_cache_stats_serialization() {
+        let stats = CacheStats {
+            cached_image_count: 5,
+            cached_size_mb: 2048,
+            warm_workload_count: 2,
+            warm_workload_ids: vec!["wl-1".to_string(), "wl-2".to_string()],
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"cached_image_count\":5"));
+        assert!(json.contains("\"cached_size_mb\":2048"));
+    }
+
+    #[test]
+    fn test_cached_image_serialization() {
+        let image = CachedImage {
+            image: "nginx:latest".to_string(),
+            digest: Some("sha256:abc123".to_string()),
+            size_bytes: 1073741824, // 1GB
+            last_used: Instant::now(),
+            use_count: 42,
+        };
+        let json = serde_json::to_string(&image).unwrap();
+        assert!(json.contains("\"image\":\"nginx:latest\""));
+        assert!(json.contains("\"use_count\":42"));
+        // last_used should be skipped (has #[serde(skip)])
+        assert!(!json.contains("last_used"));
+    }
+
+    #[test]
+    fn test_warm_workload_serialization() {
+        let wl = WarmWorkload {
+            workload_id: "wl-123".to_string(),
+            image: "myimage:v1".to_string(),
+            last_run: Instant::now(),
+            run_count: 10,
+        };
+        let json = serde_json::to_string(&wl).unwrap();
+        assert!(json.contains("\"workload_id\":\"wl-123\""));
+        assert!(json.contains("\"run_count\":10"));
+        // last_run should be skipped
+        assert!(!json.contains("last_run"));
     }
 }

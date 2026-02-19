@@ -10,17 +10,20 @@ mod config;
 mod docker;
 mod executor;
 mod messages;
+#[allow(dead_code)]
 mod metrics;
 mod nats;
+#[allow(dead_code)]
 mod security;
 mod state;
+#[allow(dead_code)]
 mod update;
 mod wasm;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{error, info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "archipelag-agent")]
@@ -49,11 +52,24 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .init();
+    // Initialize logging with RUST_LOG support (default: info)
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if std::env::var("ARCHIPELAG_LOG_JSON").is_ok() {
+        // JSON output for production log aggregation
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .json()
+            .init();
+    } else {
+        // Human-readable output for development
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .init();
+    }
 
     let args = Args::parse();
 

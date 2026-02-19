@@ -66,6 +66,7 @@ pub struct Heartbeat {
 }
 
 /// Enhanced heartbeat message with detailed metrics
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct EnhancedHeartbeat {
     pub host_id: String,
@@ -88,6 +89,7 @@ pub struct EnhancedHeartbeat {
 }
 
 /// Cache metrics snapshot for heartbeat
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct CacheMetricsSnapshot {
     /// Number of cached container images
@@ -101,6 +103,7 @@ pub struct CacheMetricsSnapshot {
 }
 
 /// System metrics snapshot for heartbeat
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct SystemMetricsSnapshot {
     pub cpu_percent: f32,
@@ -111,6 +114,7 @@ pub struct SystemMetricsSnapshot {
 }
 
 /// GPU metrics snapshot for heartbeat
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct GpuMetricsSnapshot {
     pub index: u32,
@@ -122,6 +126,7 @@ pub struct GpuMetricsSnapshot {
 }
 
 /// Active job metrics for heartbeat
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ActiveJobMetrics {
     pub job_id: String,
@@ -156,6 +161,9 @@ pub struct AssignJob {
     pub wasm_url: Option<String>,
     /// Expected hash of the WASM module
     pub wasm_hash: Option<String>,
+    /// Sandbox tier for trust-level-based resource limits
+    /// Values: "restricted", "standard", "elevated"
+    pub sandbox_tier: Option<String>,
 }
 
 fn default_runtime_type() -> String {
@@ -185,8 +193,8 @@ pub struct JobOutput {
 #[derive(Debug, Serialize)]
 pub struct JobImageOutput {
     pub job_id: String,
-    pub image_data: String,  // base64 encoded
-    pub format: String,      // "png", "jpeg", etc.
+    pub image_data: String, // base64 encoded
+    pub format: String,     // "png", "jpeg", etc.
     pub width: u32,
     pub height: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,7 +253,7 @@ impl NatsAgent {
     /// Connect to NATS server
     pub async fn connect(nats_url: &str, host_id: String) -> Result<Self> {
         let options = ConnectOptions::new()
-            .name(&format!("archipelag-agent-{}", &host_id[..8]))
+            .name(format!("archipelag-agent-{}", &host_id[..8]))
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(10))
             .ping_interval(Duration::from_secs(10))
@@ -327,6 +335,7 @@ impl NatsAgent {
     }
 
     /// Send enhanced heartbeat with detailed metrics
+    #[allow(dead_code)]
     pub async fn send_enhanced_heartbeat(
         &self,
         active_jobs: u32,
@@ -359,7 +368,12 @@ impl NatsAgent {
     }
 
     /// Publish job status update
-    pub async fn publish_status(&self, job_id: &str, state: &str, error: Option<String>) -> Result<()> {
+    pub async fn publish_status(
+        &self,
+        job_id: &str,
+        state: &str,
+        error: Option<String>,
+    ) -> Result<()> {
         let msg = JobStatus {
             job_id: job_id.to_string(),
             state: state.to_string(),
@@ -379,7 +393,13 @@ impl NatsAgent {
     }
 
     /// Publish job output chunk (for text streaming)
-    pub async fn publish_output(&self, job_id: &str, seq: u64, chunk: &str, is_final: bool) -> Result<()> {
+    pub async fn publish_output(
+        &self,
+        job_id: &str,
+        seq: u64,
+        chunk: &str,
+        is_final: bool,
+    ) -> Result<()> {
         let msg = JobOutput {
             job_id: job_id.to_string(),
             seq,
@@ -418,7 +438,15 @@ impl NatsAgent {
     }
 
     /// Publish image output
-    pub async fn publish_image(&self, job_id: &str, image_data: &str, format: &str, width: u32, height: u32, seed: Option<u64>) -> Result<()> {
+    pub async fn publish_image(
+        &self,
+        job_id: &str,
+        image_data: &str,
+        format: &str,
+        width: u32,
+        height: u32,
+        seed: Option<u64>,
+    ) -> Result<()> {
         let msg = JobImageOutput {
             job_id: job_id.to_string(),
             image_data: image_data.to_string(),
@@ -460,7 +488,10 @@ impl NatsAgent {
             .await
             .context("Failed to publish lease renewal")?;
 
-        debug!("Renewed lease for job {} by {} seconds", job_id, extend_seconds);
+        debug!(
+            "Renewed lease for job {} by {} seconds",
+            job_id, extend_seconds
+        );
         Ok(())
     }
 
@@ -479,8 +510,8 @@ impl NatsAgent {
             .await
             .context("Failed to send pairing request")?;
 
-        let pairing_response: PairingResponse =
-            serde_json::from_slice(&response.payload).context("Failed to parse pairing response")?;
+        let pairing_response: PairingResponse = serde_json::from_slice(&response.payload)
+            .context("Failed to parse pairing response")?;
 
         Ok(pairing_response)
     }
@@ -493,7 +524,11 @@ pub fn parse_job_assignment(msg: &Message) -> Result<AssignJob> {
         Err(e) => {
             // Log the actual payload for debugging
             let payload_str = String::from_utf8_lossy(&msg.payload);
-            tracing::error!("Failed to parse job assignment: {} - Payload: {}", e, payload_str);
+            tracing::error!(
+                "Failed to parse job assignment: {} - Payload: {}",
+                e,
+                payload_str
+            );
             Err(e).context("Failed to parse job assignment")
         }
     }

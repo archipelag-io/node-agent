@@ -99,11 +99,7 @@ impl StateManager {
     ///
     /// If the module is already cached and the hash matches, returns the cached path.
     /// Otherwise, downloads the module and caches it.
-    pub async fn get_wasm_module(
-        &self,
-        url: &str,
-        expected_hash: Option<&str>,
-    ) -> Result<PathBuf> {
+    pub async fn get_wasm_module(&self, url: &str, expected_hash: Option<&str>) -> Result<PathBuf> {
         let cache_dir = self.state_dir.join(WASM_CACHE_DIR);
 
         // Generate cache filename from URL hash
@@ -129,7 +125,10 @@ impl StateManager {
                 }
             } else {
                 // No hash to verify, use cached version
-                info!("Using cached WASM module (no hash verification): {}", cache_name);
+                info!(
+                    "Using cached WASM module (no hash verification): {}",
+                    cache_name
+                );
                 return Ok(cache_path);
             }
         }
@@ -149,7 +148,11 @@ impl StateManager {
                     actual_hash
                 );
             }
-            info!("WASM hash verified: {}...{}", &actual_hash[..8], &actual_hash[56..]);
+            info!(
+                "WASM hash verified: {}...{}",
+                &actual_hash[..8],
+                &actual_hash[56..]
+            );
         }
 
         // Save to cache
@@ -197,11 +200,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 
 /// Normalize a hash (remove sha256: prefix if present, lowercase)
 fn normalize_hash(hash: &str) -> String {
-    let h = if hash.starts_with("sha256:") {
-        &hash[7..]
-    } else {
-        hash
-    };
+    let h = hash.strip_prefix("sha256:").unwrap_or(hash);
     h.to_lowercase()
 }
 
@@ -215,9 +214,7 @@ async fn verify_file_hash(path: &Path, expected_hash: &str) -> Result<bool> {
 
 /// Download a file from a URL
 async fn download_file(url: &str) -> Result<Vec<u8>> {
-    let response = reqwest::get(url)
-        .await
-        .context("Failed to download file")?;
+    let response = reqwest::get(url).await.context("Failed to download file")?;
 
     if !response.status().is_success() {
         anyhow::bail!("Download failed with status: {}", response.status());
@@ -253,10 +250,101 @@ mod tests {
 
     #[test]
     fn test_normalize_hash() {
-        assert_eq!(
-            normalize_hash("sha256:ABC123"),
-            "abc123"
-        );
+        assert_eq!(normalize_hash("sha256:ABC123"), "abc123");
         assert_eq!(normalize_hash("ABC123"), "abc123");
+    }
+
+    #[test]
+    fn test_hash_string_deterministic() {
+        let hash1 = hash_string("hello");
+        let hash2 = hash_string("hello");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_string_different_inputs() {
+        let hash1 = hash_string("hello");
+        let hash2 = hash_string("world");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_bytes() {
+        let hash = hash_bytes(b"test data");
+        assert_eq!(hash.len(), 64); // SHA256 hex = 64 chars
+    }
+
+    #[test]
+    fn test_hash_bytes_matches_known_sha256() {
+        // SHA256 of empty string
+        let hash = hash_bytes(b"");
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_normalize_hash_preserves_lowercase() {
+        assert_eq!(normalize_hash("abc123"), "abc123");
+    }
+
+    #[test]
+    fn test_normalize_hash_strips_prefix_and_lowercases() {
+        assert_eq!(normalize_hash("sha256:DEADBEEF"), "deadbeef");
+    }
+
+    #[test]
+    fn test_agent_state_default() {
+        let state = AgentState::default();
+        assert!(!state.paired);
+        assert!(state.account_id.is_none());
+        assert!(state.paired_at.is_none());
+    }
+
+    #[test]
+    fn test_agent_state_serialization() {
+        let state = AgentState {
+            paired: true,
+            account_id: Some("user-123".to_string()),
+            paired_at: Some("1234567890".to_string()),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"paired\":true"));
+        assert!(json.contains("\"account_id\":\"user-123\""));
+
+        // Roundtrip
+        let deserialized: AgentState = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.paired);
+        assert_eq!(deserialized.account_id, Some("user-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_file_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wasm");
+        std::fs::write(&path, b"test content").unwrap();
+
+        let expected_hash = hash_bytes(b"test content");
+        assert!(verify_file_hash(&path, &expected_hash).await.unwrap());
+
+        // Wrong hash should return false
+        assert!(!verify_file_hash(&path, "sha256:wrong").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_verify_file_hash_with_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.wasm");
+        std::fs::write(&path, b"hello").unwrap();
+
+        let expected_hash = format!("sha256:{}", hash_bytes(b"hello"));
+        assert!(verify_file_hash(&path, &expected_hash).await.unwrap());
+    }
+
+    #[test]
+    fn test_chrono_now_returns_numeric() {
+        let now = chrono_now();
+        assert!(now.parse::<u64>().is_ok(), "Should be a numeric timestamp");
     }
 }

@@ -5,6 +5,7 @@ use config::{Config, File};
 use serde::Deserialize;
 
 pub use crate::cache::CacheConfig;
+pub use crate::security::SigningConfig;
 
 /// Agent configuration
 #[derive(Debug, Deserialize, Clone)]
@@ -29,6 +30,45 @@ pub struct AgentConfig {
     /// Cache settings for cold-start optimization
     #[serde(default)]
     pub cache: CacheConfig,
+
+    /// Signature verification settings
+    #[serde(default)]
+    pub signing: SigningConfig,
+
+    /// Registry allowlist settings
+    #[serde(default)]
+    pub registry: RegistryConfig,
+}
+
+/// Registry allowlist configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct RegistryConfig {
+    /// Enable registry allowlist enforcement (default: true)
+    #[serde(default = "default_registry_enabled")]
+    pub enabled: bool,
+
+    /// Allowed registry prefixes (e.g., "ghcr.io/archipelag-io")
+    /// If empty, uses built-in defaults
+    #[serde(default)]
+    pub allowed: Vec<String>,
+
+    /// Require images to have a pinned digest (sha256:...)
+    #[serde(default)]
+    pub require_digest: bool,
+}
+
+fn default_registry_enabled() -> bool {
+    true
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allowed: vec![],
+            require_digest: false,
+        }
+    }
 }
 
 /// Host configuration
@@ -140,6 +180,8 @@ impl Default for AgentConfig {
                 resource_limits: ResourceLimits::default(),
             },
             cache: CacheConfig::default(),
+            signing: SigningConfig::default(),
+            registry: RegistryConfig::default(),
         }
     }
 }
@@ -155,4 +197,45 @@ pub fn load(path: &str) -> Result<AgentConfig> {
     config
         .try_deserialize()
         .or_else(|_| Ok(AgentConfig::default()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AgentConfig::default();
+        assert!(config.host_id.is_none());
+        assert_eq!(config.coordinator.nats_url, "nats://localhost:4222");
+        assert!(config.docker.socket.is_none());
+        assert_eq!(
+            config.workload.llm_chat_image,
+            "archipelag-llm-chat-mock:latest"
+        );
+        assert!(config.workload.gpu_devices.is_none());
+    }
+
+    #[test]
+    fn test_default_resource_limits() {
+        let limits = ResourceLimits::default();
+        assert_eq!(limits.memory_mb, 8192);
+        assert!(limits.read_only_rootfs);
+        assert_eq!(limits.tmpfs_size_mb, 256);
+        assert!(limits.cpu_percent.is_none());
+        assert!(limits.network_disabled);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file_returns_defaults() {
+        let config = load("/nonexistent/path/config").unwrap();
+        assert_eq!(config.coordinator.nats_url, "nats://localhost:4222");
+    }
+
+    #[test]
+    fn test_host_config_defaults() {
+        let host = HostConfig::default();
+        assert!(host.region.is_none());
+        assert!(host.name.is_none());
+    }
 }

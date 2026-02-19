@@ -51,7 +51,7 @@ impl Default for WasmConfig {
             input: String::new(),
             max_memory_bytes: 256 * 1024 * 1024, // 256MB
             max_fuel: Some(100_000_000_000),     // 100 billion instructions
-            timeout_seconds: 60,                  // 1 minute timeout for WASM
+            timeout_seconds: 60,                 // 1 minute timeout for WASM
             expected_hash: None,
         }
     }
@@ -63,11 +63,9 @@ impl Default for WasmConfig {
 /// Returns Ok(()) if verification passes, Err if it fails.
 pub fn verify_wasm_hash(module_bytes: &[u8], expected_hash: &str) -> Result<()> {
     // Normalize expected hash (remove sha256: prefix if present)
-    let expected = if expected_hash.starts_with("sha256:") {
-        &expected_hash[7..]
-    } else {
-        expected_hash
-    };
+    let expected = expected_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(expected_hash);
 
     // Compute SHA256 hash of the module
     let mut hasher = Sha256::new();
@@ -144,7 +142,13 @@ impl WasmExecutor {
         // Run in blocking task since wasmtime operations are sync, with timeout
         let run_result = timeout(timeout_duration, async {
             tokio::task::spawn_blocking(move || {
-                Self::run_sync(&engine, &module_path, &input, max_fuel, expected_hash.as_deref())
+                Self::run_sync(
+                    &engine,
+                    &module_path,
+                    &input,
+                    max_fuel,
+                    expected_hash.as_deref(),
+                )
             })
             .await
             .context("WASM execution task failed")?
@@ -202,8 +206,7 @@ impl WasmExecutor {
         }
 
         // Load the module from bytes
-        let module = Module::new(engine, &module_bytes)
-            .context("Failed to load WASM module")?;
+        let module = Module::new(engine, &module_bytes).context("Failed to load WASM module")?;
 
         // Create pipes for stdin/stdout/stderr
         let stdin = MemoryInputPipe::new(input.as_bytes().to_vec());
@@ -280,13 +283,9 @@ impl WasmExecutor {
 
     /// Load and validate a WASM module without executing it
     pub fn validate_module(&self, path: &Path) -> Result<ModuleInfo> {
-        let module = Module::from_file(&self.engine, path)
-            .context("Failed to load WASM module")?;
+        let module = Module::from_file(&self.engine, path).context("Failed to load WASM module")?;
 
-        let exports: Vec<String> = module
-            .exports()
-            .map(|e| e.name().to_string())
-            .collect();
+        let exports: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
 
         let imports: Vec<String> = module
             .imports()

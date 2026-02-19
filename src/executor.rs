@@ -41,13 +41,15 @@ pub async fn run_test_job(docker: &Docker, config: &AgentConfig, prompt: &str) -
         image: config.workload.llm_chat_image.clone(),
         input: input_json,
         gpu_devices: config.workload.gpu_devices.clone(),
-        timeout_seconds: 300, // 5 minute timeout for test jobs
+        timeout_seconds: 300,  // 5 minute timeout for test jobs
         expected_digest: None, // No digest verification for test jobs
         memory_bytes,
         read_only_rootfs: limits.read_only_rootfs,
         tmpfs_mounts,
         cpu_quota,
         network_disabled: limits.network_disabled,
+        sandbox_tier: None, // Test jobs bypass sandbox tier limits
+        seccomp_profile: None, // No seccomp for test jobs
     };
 
     info!("Starting container: {}", container_config.image);
@@ -83,16 +85,18 @@ pub async fn run_test_job(docker: &Docker, config: &AgentConfig, prompt: &str) -
                     WorkloadOutput::Progress { step, total } => {
                         info!("Progress: {}/{}", step, total);
                     }
-                    WorkloadOutput::Image { data: _, format, width, height } => {
+                    WorkloadOutput::Image {
+                        data: _,
+                        format,
+                        width,
+                        height,
+                    } => {
                         info!("Image generated: {}x{} {}", width, height, format);
                     }
                     WorkloadOutput::Done { usage, seed } => {
                         println!(); // Final newline
                         if let Some(usage) = usage {
-                            info!(
-                                "Done. Tokens: {}",
-                                usage.completion_tokens.unwrap_or(0)
-                            );
+                            info!("Done. Tokens: {}", usage.completion_tokens.unwrap_or(0));
                         } else if let Some(s) = seed {
                             info!("Done. Seed: {}", s);
                         } else {

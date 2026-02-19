@@ -7,6 +7,8 @@ use crate::config::AgentConfig;
 use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
 use crate::nats::{self, AssignJob, CancelJob, HostCapabilities, NatsAgent};
+use crate::security::registry::RegistryAllowlist;
+use crate::security::signing::SignatureVerifier;
 use crate::state::StateManager;
 use crate::wasm::{WasmConfig, WasmExecutor, WasmOutput};
 use anyhow::{Context, Result};
@@ -21,7 +23,7 @@ use std::time::Duration;
 use sysinfo::System;
 use tokio::select;
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Maximum backoff delay for reconnection attempts (30 seconds)
 const MAX_BACKOFF_SECS: u64 = 30;
@@ -38,6 +40,10 @@ pub struct Agent {
     nats: NatsAgent,
     state: Arc<RwLock<StateManager>>,
     cache: Arc<CacheManager>,
+    /// Signature verifier for workload images
+    signature_verifier: Arc<SignatureVerifier>,
+    /// Registry allowlist for container image validation
+    registry_allowlist: Arc<RegistryAllowlist>,
     active_jobs: Arc<AtomicU32>,
     shutdown: Arc<AtomicBool>,
     /// Map of job_id -> cancel sender for running jobs
@@ -62,6 +68,61 @@ impl Agent {
         // Initialize cache manager for cold-start optimization
         let cache = CacheManager::new(docker.clone(), config.cache.clone());
 
+        // Initialize signature verifier
+        let mut signature_verifier = SignatureVerifier::new(config.signing.clone());
+
+        // Check if cosign is available
+        if signature_verifier.is_enabled() {
+            if SignatureVerifier::cosign_available() {
+                info!("Signature verification enabled (cosign available)");
+
+                // Try to load keys from coordinator
+                if let Err(e) = signature_verifier.load_keys_from_coordinator().await {
+                    warn!("Failed to load signing keys from coordinator: {}", e);
+                }
+
+                // Try to load cached keys as fallback
+                if signature_verifier.key_count() == 0 {
+                    if let Err(e) = signature_verifier.load_keys_from_cache().await {
+                        debug!("Failed to load cached signing keys: {}", e);
+                    }
+                }
+
+                info!(
+                    "Signature verifier initialized with {} trusted keys (required: {})",
+                    signature_verifier.key_count(),
+                    signature_verifier.is_required()
+                );
+            } else {
+                warn!("Signature verification enabled but cosign not found - verification will be skipped");
+            }
+        } else {
+            info!("Signature verification disabled");
+        }
+
+        // Initialize registry allowlist
+        let registry_allowlist = if !config.registry.enabled {
+            info!("Registry allowlist disabled");
+            RegistryAllowlist::disabled()
+        } else if config.registry.allowed.is_empty() {
+            let allowlist = RegistryAllowlist::new()
+                .with_require_digest(config.registry.require_digest);
+            info!(
+                "Registry allowlist enabled with defaults (require_digest: {})",
+                config.registry.require_digest
+            );
+            allowlist
+        } else {
+            let allowlist = RegistryAllowlist::with_registries(config.registry.allowed.clone())
+                .with_require_digest(config.registry.require_digest);
+            info!(
+                "Registry allowlist enabled: {} registries (require_digest: {})",
+                config.registry.allowed.len(),
+                config.registry.require_digest
+            );
+            allowlist
+        };
+
         // Connect to NATS
         let nats = NatsAgent::connect(&config.coordinator.nats_url, host_id).await?;
 
@@ -71,6 +132,8 @@ impl Agent {
             nats,
             state: Arc::new(RwLock::new(state)),
             cache: Arc::new(cache),
+            signature_verifier: Arc::new(signature_verifier),
+            registry_allowlist: Arc::new(registry_allowlist),
             active_jobs: Arc::new(AtomicU32::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             job_cancellers: Arc::new(DashMap::new()),
@@ -253,7 +316,10 @@ impl Agent {
             match self.nats.subscribe_jobs().await {
                 Ok(new_subscriber) => {
                     *subscriber = new_subscriber;
-                    info!("Subscription recovered successfully after {} attempts", attempts);
+                    info!(
+                        "Subscription recovered successfully after {} attempts",
+                        attempts
+                    );
                     return Ok(());
                 }
                 Err(e) => {
@@ -359,14 +425,30 @@ impl Agent {
         let shutdown = self.shutdown.clone();
         let state = self.state.clone();
         let cache = self.cache.clone();
+        let signature_verifier = self.signature_verifier.clone();
+        let registry_allowlist = self.registry_allowlist.clone();
 
         tokio::spawn(async move {
             let job_id = job.job_id.clone();
             let workload_id = job.workload_id.clone();
-            let image = job.container_image.clone()
+            let image = job
+                .container_image
+                .clone()
                 .unwrap_or_else(|| config.workload.llm_chat_image.clone());
 
-            let result = execute_job(&docker, &nats, &config, &state, &cache, job, shutdown, cancel_rx).await;
+            let result = execute_job(
+                &docker,
+                &nats,
+                &config,
+                &state,
+                &cache,
+                &signature_verifier,
+                &registry_allowlist,
+                job,
+                shutdown,
+                cancel_rx,
+            )
+            .await;
 
             match &result {
                 Ok(()) => {
@@ -389,12 +471,23 @@ impl Agent {
 }
 
 /// Execute a single job (routes to container or WASM executor)
+#[allow(clippy::too_many_arguments)]
+#[instrument(
+    skip(docker, nats, config, state, cache, signature_verifier, registry_allowlist, _shutdown, cancel_rx),
+    fields(
+        job_id = %job.job_id,
+        workload_id = ?job.workload_id,
+        runtime_type = %job.runtime_type,
+    )
+)]
 async fn execute_job(
     docker: &Docker,
     nats: &NatsAgent,
     config: &AgentConfig,
     state: &Arc<RwLock<StateManager>>,
     cache: &Arc<CacheManager>,
+    signature_verifier: &Arc<SignatureVerifier>,
+    registry_allowlist: &Arc<RegistryAllowlist>,
     job: AssignJob,
     _shutdown: Arc<AtomicBool>,
     cancel_rx: watch::Receiver<bool>,
@@ -413,7 +506,19 @@ async fn execute_job(
     // Route based on runtime type
     match job.runtime_type.as_str() {
         "wasm" => execute_wasm_job(nats, state, &job, cancel_rx).await,
-        "container" | _ => execute_container_job(docker, nats, config, cache, &job, cancel_rx).await,
+        _ => {
+            execute_container_job(
+                docker,
+                nats,
+                config,
+                cache,
+                signature_verifier,
+                registry_allowlist,
+                &job,
+                cancel_rx,
+            )
+            .await
+        }
     }
 }
 
@@ -465,12 +570,11 @@ async fn execute_wasm_job(
     let (output_tx, mut output_rx) = mpsc::channel::<WasmOutput>(256);
 
     // Spawn WASM runner
-    let wasm_handle = tokio::spawn(async move {
-        executor.run(wasm_config, output_tx).await
-    });
+    let wasm_handle = tokio::spawn(async move { executor.run(wasm_config, output_tx).await });
 
     // Lease renewal interval (every 30 seconds)
-    let mut lease_interval = tokio::time::interval(Duration::from_secs(LEASE_RENEWAL_INTERVAL_SECS));
+    let mut lease_interval =
+        tokio::time::interval(Duration::from_secs(LEASE_RENEWAL_INTERVAL_SECS));
     lease_interval.tick().await; // Skip immediate first tick
 
     // Process WASM output with cancellation and lease renewal support
@@ -510,13 +614,19 @@ async fn execute_wasm_job(
         nats.publish_status(
             job_id,
             "failed",
-            Some(format!("Timeout: job exceeded {}s limit", DEFAULT_WASM_TIMEOUT_SECS)),
+            Some(format!(
+                "Timeout: job exceeded {}s limit",
+                DEFAULT_WASM_TIMEOUT_SECS
+            )),
         )
         .await?;
         warn!("WASM job {} failed: timeout", job_id);
     } else if exit_code == 0 {
         nats.publish_status(job_id, "succeeded", None).await?;
-        info!("WASM job {} succeeded, generated {} tokens", job_id, token_count);
+        info!(
+            "WASM job {} succeeded, generated {} tokens",
+            job_id, token_count
+        );
     } else {
         nats.publish_status(job_id, "failed", Some(format!("Exit code: {}", exit_code)))
             .await?;
@@ -567,9 +677,15 @@ async fn process_wasm_output(
                                 debug!("WASM progress: {}/{}", step, total);
                                 nats.publish_progress(job_id, *step, *total).await?;
                             }
-                            WorkloadOutput::Image { data, format, width, height } => {
+                            WorkloadOutput::Image {
+                                data,
+                                format,
+                                width,
+                                height,
+                            } => {
                                 info!("WASM image: {}x{} {}", width, height, format);
-                                nats.publish_image(job_id, data, format, *width, *height, None).await?;
+                                nats.publish_image(job_id, data, format, *width, *height, None)
+                                    .await?;
                             }
                             WorkloadOutput::Done { usage, seed } => {
                                 debug!("WASM done: usage={:?}, seed={:?}", usage, seed);
@@ -615,6 +731,8 @@ async fn execute_container_job(
     nats: &NatsAgent,
     config: &AgentConfig,
     cache: &Arc<CacheManager>,
+    signature_verifier: &Arc<SignatureVerifier>,
+    registry_allowlist: &Arc<RegistryAllowlist>,
     job: &AssignJob,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<()> {
@@ -626,10 +744,18 @@ async fn execute_container_job(
         .clone()
         .unwrap_or_else(|| config.workload.llm_chat_image.clone());
 
+    // Enforce registry allowlist before pulling or running the image
+    if let Err(e) = registry_allowlist.check(&image) {
+        error!("Registry allowlist rejected image {}: {}", image, e);
+        anyhow::bail!("Image not allowed: {}", e);
+    }
+
     info!("Executing container workload: {}", image);
 
     // Ensure image is available (pre-pull if not cached)
-    let needed_pull = cache.ensure_image(&image).await
+    let needed_pull = cache
+        .ensure_image(&image)
+        .await
         .context("Failed to ensure container image")?;
     if needed_pull {
         info!("Image {} was pulled (cold start)", image);
@@ -640,7 +766,7 @@ async fn execute_container_job(
     // Prepare container config
     let input_json = serde_json::to_string(&job.input).context("Failed to serialize job input")?;
 
-    // Build resource limits from config
+    // Build resource limits from config (can be overridden by sandbox_tier)
     let limits = &config.workload.resource_limits;
     let memory_bytes = Some((limits.memory_mb * 1024 * 1024) as i64);
 
@@ -659,6 +785,9 @@ async fn execute_container_job(
     // Convert CPU percentage to quota (100% = 100000 microseconds per period)
     let cpu_quota = limits.cpu_percent.map(|percent| (percent * 1000) as i64);
 
+    // Get sandbox tier from job assignment (trust-level-based limits)
+    let sandbox_tier = job.sandbox_tier.clone();
+
     let container_config = ContainerConfig {
         image,
         input: input_json,
@@ -670,15 +799,18 @@ async fn execute_container_job(
         tmpfs_mounts,
         cpu_quota,
         network_disabled: limits.network_disabled,
+        sandbox_tier,
+        seccomp_profile: None, // Applied by apply_sandbox_tier()
     };
 
     // Create channel for container output
     let (output_tx, mut output_rx) = mpsc::channel::<ContainerOutput>(256);
 
-    // Spawn container runner
+    // Spawn container runner with signature verification
     let docker_clone = docker.clone();
+    let verifier = Some(signature_verifier.clone());
     let container_handle = tokio::spawn(async move {
-        docker::run_container_streaming(&docker_clone, container_config, output_tx).await
+        docker::run_verified_container(&docker_clone, container_config, verifier, output_tx).await
     });
 
     // Track output
@@ -690,7 +822,8 @@ async fn execute_container_job(
     let mut cancelled = false;
 
     // Lease renewal interval (every 30 seconds)
-    let mut lease_interval = tokio::time::interval(Duration::from_secs(LEASE_RENEWAL_INTERVAL_SECS));
+    let mut lease_interval =
+        tokio::time::interval(Duration::from_secs(LEASE_RENEWAL_INTERVAL_SECS));
     lease_interval.tick().await; // Skip immediate first tick
 
     // Process container output and forward to NATS, with cancellation and lease renewal

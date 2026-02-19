@@ -1,7 +1,7 @@
 //! Docker container management
 //!
 //! Provides functions to run containers with streaming output,
-//! timeout handling, and cleanup.
+//! timeout handling, cleanup, and signature verification.
 
 use anyhow::{Context, Result};
 use bollard::container::{
@@ -12,18 +12,25 @@ use bollard::models::{DeviceRequest, HostConfig};
 use bollard::Docker;
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+
+use crate::security::seccomp::{ProfileType, SeccompProfile};
+use crate::security::signing::{SignatureResult, SignatureVerifier};
 
 /// Connect to the Docker daemon
 pub async fn connect() -> Result<Docker> {
-    let docker = Docker::connect_with_local_defaults()
-        .context("Failed to connect to Docker daemon")?;
+    let docker =
+        Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
     // Verify connection
-    let version = docker.version().await.context("Failed to get Docker version")?;
+    let version = docker
+        .version()
+        .await
+        .context("Failed to get Docker version")?;
     info!(
         "Docker version: {}",
         version.version.unwrap_or_else(|| "unknown".to_string())
@@ -59,7 +66,10 @@ pub async fn verify_image_digest(
 
     // Image ID format is "sha256:<hash>"
     if image_id == expected {
-        info!("Image digest verified: {}", &expected[..20.min(expected.len())]);
+        info!(
+            "Image digest verified: {}",
+            &expected[..20.min(expected.len())]
+        );
         return Ok(());
     }
 
@@ -69,7 +79,10 @@ pub async fn verify_image_digest(
             // RepoDigests are in format "repo@sha256:<hash>"
             if let Some(digest_part) = repo_digest.split('@').nth(1) {
                 if digest_part == expected {
-                    info!("Image digest verified via repo digest: {}", &expected[..20.min(expected.len())]);
+                    info!(
+                        "Image digest verified via repo digest: {}",
+                        &expected[..20.min(expected.len())]
+                    );
                     return Ok(());
                 }
             }
@@ -110,6 +123,12 @@ pub struct ContainerConfig {
     /// Disable network access for the container (default: true for security)
     /// When true, container runs with network_mode: "none"
     pub network_disabled: bool,
+    /// Sandbox tier for trust-level-based resource limits
+    /// Values: "restricted", "standard", "elevated"
+    pub sandbox_tier: Option<String>,
+    /// Seccomp profile JSON string for syscall filtering
+    /// Applied via Docker SecurityOpt as "seccomp=<json>"
+    pub seccomp_profile: Option<String>,
 }
 
 impl Default for ContainerConfig {
@@ -125,6 +144,67 @@ impl Default for ContainerConfig {
             tmpfs_mounts: None,
             cpu_quota: None,
             network_disabled: true, // Secure by default: no network access
+            sandbox_tier: Some("standard".to_string()),
+            seccomp_profile: None,
+        }
+    }
+}
+
+impl ContainerConfig {
+    /// Apply sandbox tier resource limits
+    ///
+    /// Sandbox tiers:
+    /// - "restricted": 256MB RAM, 60s timeout, no network, no GPU
+    /// - "standard": 1GB RAM, 300s timeout, no network
+    /// - "elevated": 8GB RAM, 600s timeout, network allowed, GPU allowed
+    pub fn apply_sandbox_tier(&mut self) {
+        let profile_type = match self.sandbox_tier.as_deref() {
+            Some("restricted") => {
+                self.memory_bytes = Some(256 * 1024 * 1024); // 256MB
+                self.timeout_seconds = 60;
+                self.network_disabled = true;
+                self.gpu_devices = None; // No GPU access
+                self.cpu_quota = Some(100_000); // 1 CPU
+                ProfileType::Minimal
+            }
+            Some("standard") => {
+                self.memory_bytes = Some(1024 * 1024 * 1024); // 1GB
+                self.timeout_seconds = 300;
+                self.network_disabled = true;
+                // GPU access if specified
+                self.cpu_quota = Some(200_000); // 2 CPUs
+                ProfileType::Default
+            }
+            Some("elevated") => {
+                self.memory_bytes = Some(8 * 1024 * 1024 * 1024); // 8GB
+                self.timeout_seconds = 600;
+                self.network_disabled = false; // Network allowed
+                // GPU access if specified
+                self.cpu_quota = Some(400_000); // 4 CPUs
+                // Use GPU profile if GPU devices are configured, otherwise Network
+                if self.gpu_devices.is_some() {
+                    ProfileType::Gpu
+                } else {
+                    ProfileType::Network
+                }
+            }
+            _ => {
+                // Default to standard if unknown
+                debug!("Unknown sandbox tier, using standard defaults");
+                ProfileType::Default
+            }
+        };
+
+        // Apply seccomp profile for this tier
+        match SeccompProfile::for_type(profile_type).to_json() {
+            Ok(json) => {
+                self.seccomp_profile = Some(json);
+                debug!("Applied {:?} seccomp profile", profile_type);
+            }
+            Err(e) => {
+                warn!("Failed to serialize seccomp profile: {}", e);
+                // Continue without seccomp rather than failing the job
+            }
         }
     }
 }
@@ -140,13 +220,91 @@ pub enum ContainerOutput {
     /// Container was killed due to OOM (out of memory)
     OomKilled,
     /// Container crashed with an error
-    Crashed { exit_code: i64, reason: String },
+    Crashed {
+        exit_code: i64,
+        reason: String,
+    },
+}
+
+/// Run a container with full security verification and stream its output.
+///
+/// This function performs:
+/// 1. Signature verification (if verifier is provided and enabled)
+/// 2. Digest verification (if expected_digest is provided)
+/// 3. Sandbox tier resource limits (if sandbox_tier is specified)
+/// 4. Container execution with timeout
+///
+/// Returns the exit code (or -1 for timeout).
+pub async fn run_verified_container(
+    docker: &Docker,
+    mut config: ContainerConfig,
+    verifier: Option<Arc<SignatureVerifier>>,
+    output_tx: mpsc::Sender<ContainerOutput>,
+) -> Result<i64> {
+    // Step 1: Verify signature if verifier is provided
+    if let Some(ref verifier) = verifier {
+        let image_ref = build_image_reference(&config.image, config.expected_digest.as_deref());
+
+        match verifier.verify(&image_ref).await {
+            Ok(SignatureResult::Valid { key_id, issuer }) => {
+                info!(
+                    "Signature verified for {} with key {} (issuer: {:?})",
+                    config.image, key_id, issuer
+                );
+            }
+            Ok(SignatureResult::Skipped) => {
+                debug!("Signature verification skipped for {}", config.image);
+            }
+            Err(e) => {
+                error!("Signature verification failed for {}: {}", config.image, e);
+                anyhow::bail!("Signature verification failed: {}", e);
+            }
+        }
+    }
+
+    // Step 2: Apply sandbox tier resource limits
+    if config.sandbox_tier.is_some() {
+        config.apply_sandbox_tier();
+        debug!(
+            "Applied sandbox tier {:?}: memory={:?}MB, timeout={}s, network={}",
+            config.sandbox_tier,
+            config.memory_bytes.map(|b| b / 1024 / 1024),
+            config.timeout_seconds,
+            !config.network_disabled
+        );
+    }
+
+    // Step 3: Run the container
+    run_container_streaming(docker, config, output_tx).await
+}
+
+/// Build the full image reference with digest for verification
+fn build_image_reference(image: &str, digest: Option<&str>) -> String {
+    match digest {
+        Some(d) if !d.is_empty() => {
+            // If image already contains @sha256:, use as-is
+            if image.contains('@') {
+                image.to_string()
+            } else {
+                // Append digest
+                let d = if d.starts_with("sha256:") {
+                    d.to_string()
+                } else {
+                    format!("sha256:{}", d)
+                };
+                format!("{}@{}", image.split(':').next().unwrap_or(image), d)
+            }
+        }
+        _ => image.to_string(),
+    }
 }
 
 /// Run a container and stream its output through a channel.
 ///
 /// The container will be killed if it exceeds the configured timeout.
 /// Returns the exit code (or -1 for timeout).
+///
+/// Note: Prefer `run_verified_container` which includes signature verification.
 pub async fn run_container_streaming(
     docker: &Docker,
     config: ContainerConfig,
@@ -161,7 +319,10 @@ pub async fn run_container_streaming(
             .await
             .context("Image digest verification failed - refusing to execute")?;
     } else {
-        debug!("No expected digest provided, skipping verification for image: {}", config.image);
+        debug!(
+            "No expected digest provided, skipping verification for image: {}",
+            config.image
+        );
     }
 
     // Configure GPU access (only if devices are actually specified)
@@ -176,6 +337,11 @@ pub async fn run_container_streaming(
                 ..Default::default()
             }])
         }
+    });
+
+    // Build seccomp security option if a profile is provided
+    let security_opt = config.seccomp_profile.as_ref().map(|profile_json| {
+        vec![format!("seccomp={}", profile_json)]
     });
 
     // Create container with resource limits
@@ -195,13 +361,19 @@ pub async fn run_container_streaming(
         } else {
             None
         },
+        // Seccomp profile for syscall filtering
+        security_opt,
         ..Default::default()
     };
 
     if config.read_only_rootfs {
         debug!(
             "Container will use read-only rootfs{}",
-            if config.tmpfs_mounts.is_some() { " with tmpfs mounts" } else { "" }
+            if config.tmpfs_mounts.is_some() {
+                " with tmpfs mounts"
+            } else {
+                ""
+            }
         );
     }
 
@@ -209,11 +381,15 @@ pub async fn run_container_streaming(
         debug!("Container network access disabled (network_mode: none)");
     }
 
+    if config.seccomp_profile.is_some() {
+        debug!("Container seccomp profile applied");
+    }
+
     let container_config = Config {
         image: Some(config.image.clone()),
         host_config: Some(host_config),
         open_stdin: Some(true),
-        stdin_once: Some(true),  // Close stdin after first detach
+        stdin_once: Some(true), // Close stdin after first detach
         attach_stdin: Some(true),
         attach_stdout: Some(true),
         attach_stderr: Some(true),
@@ -226,7 +402,10 @@ pub async fn run_container_streaming(
         platform: None,
     };
 
-    debug!("Creating container: {} (timeout: {}s)", container_name, config.timeout_seconds);
+    debug!(
+        "Creating container: {} (timeout: {}s)",
+        container_name, config.timeout_seconds
+    );
     let container = docker
         .create_container(Some(create_options), container_config)
         .await
@@ -330,10 +509,12 @@ pub async fn run_container_streaming(
                     "Container {} crashed with exit code {}: {}",
                     container_name, code, reason
                 );
-                let _ = output_tx.send(ContainerOutput::Crashed {
-                    exit_code: code,
-                    reason,
-                }).await;
+                let _ = output_tx
+                    .send(ContainerOutput::Crashed {
+                        exit_code: code,
+                        reason,
+                    })
+                    .await;
             } else {
                 // Normal completion
                 let _ = output_tx.send(ContainerOutput::Exit(code)).await;
@@ -403,9 +584,8 @@ where
 
     // Spawn the container runner
     let docker_clone = docker.clone();
-    let runner = tokio::spawn(async move {
-        run_container_streaming(&docker_clone, config, tx).await
-    });
+    let runner =
+        tokio::spawn(async move { run_container_streaming(&docker_clone, config, tx).await });
 
     // Process output
     while let Some(output) = rx.recv().await {
@@ -468,7 +648,11 @@ fn interpret_exit_code(code: i64) -> String {
         // Common application exit codes
         255 => "Exit status out of range or SSH error".to_string(),
         _ if code > 128 && code < 192 => {
-            format!("Killed by signal {} ({})", code - 128, signal_name(code - 128))
+            format!(
+                "Killed by signal {} ({})",
+                code - 128,
+                signal_name(code - 128)
+            )
         }
         _ => format!("Unknown error (code {})", code),
     }

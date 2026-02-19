@@ -1,24 +1,48 @@
 # Archipelag.io Node Agent Configuration
-# Copy this to config.toml and customize
+# Copy this to config.toml and customize for your environment.
+# Run with: cargo run -- --config config.toml
 
-# Host ID (optional, auto-generated if not set)
-# host_id = "my-gaming-rig"
+# =============================================================================
+# HOST IDENTITY
+# =============================================================================
+
+[host]
+# Human-readable name shown in the coordinator dashboard
+name = "my-gaming-rig"
+
+# Geographic region for placement (e.g., "us-east", "eu-west", "ap-southeast")
+region = "us-east"
+
+# Unique host identifier (auto-generated UUID on first run if not set)
+# host_id = "custom-host-id"
+
+# =============================================================================
+# COORDINATOR CONNECTION
+# =============================================================================
 
 [coordinator]
-# NATS server URL
+# NATS server URL for job dispatch and heartbeats
 nats_url = "nats://localhost:4222"
 
+# =============================================================================
+# DOCKER RUNTIME
+# =============================================================================
+
 [docker]
-# Optional: custom Docker socket path
+# Custom Docker socket path (optional)
 # Default: unix:///var/run/docker.sock (Linux) or npipe:////./pipe/docker_engine (Windows)
 # socket = "unix:///var/run/docker.sock"
+
+# =============================================================================
+# WORKLOAD CONFIGURATION
+# =============================================================================
 
 [workload]
 # Container image for LLM chat workload
 llm_chat_image = "llm-chat:latest"
 
-# GPU devices to use (NVIDIA device IDs)
-# Use ["0"] for single GPU, ["0", "1"] for multi-GPU
+# GPU device IDs to pass through to containers (NVIDIA)
+# Use ["0"] for single GPU, ["0", "1"] for multi-GPU, [] for CPU-only
 gpu_devices = ["0"]
 
 # Resource limits for container workloads
@@ -27,12 +51,11 @@ gpu_devices = ["0"]
 memory_mb = 8192
 
 # Enable read-only root filesystem for security (default: true)
-# When enabled, containers cannot write to their filesystem
+# Containers cannot write to their filesystem when enabled
 read_only_rootfs = true
 
 # Size of tmpfs mount at /tmp in MB (default: 256)
-# Only used when read_only_rootfs is true
-# This provides a writable temp directory without disk access
+# Provides a writable temp directory when read_only_rootfs is true
 tmpfs_size_mb = 256
 
 # CPU quota as percentage (e.g., 200 = 2 cores, 50 = half core)
@@ -41,5 +64,78 @@ tmpfs_size_mb = 256
 
 # Disable network access for containers (default: true)
 # When true, containers run with network_mode: "none"
-# This prevents workloads from making external network requests
 network_disabled = true
+
+# =============================================================================
+# IMAGE CACHE (cold-start optimization)
+# =============================================================================
+
+[cache]
+# Pre-pull images on agent startup to reduce first-job latency
+enable_preload = false
+
+# Images to pre-pull (only used when enable_preload = true)
+preload_images = ["llm-chat:latest"]
+
+# Maximum number of cached images to retain (default: 20)
+max_cached_images = 20
+
+# TTL in seconds for warm container tracking (default: 3600 = 1 hour)
+warm_ttl_seconds = 3600
+
+# =============================================================================
+# CONTAINER SIGNING (cosign verification)
+# =============================================================================
+
+[signing]
+# Enable workload signature verification (default: true)
+enabled = true
+
+# Require all workloads to have valid signatures (default: false)
+# Set to true in production for maximum security
+require_signature = false
+
+# List of trusted public keys for verification
+# [[signing.trusted_keys]]
+# name = "archipelag-official"
+# key = "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+
+# URL to fetch trusted keys from coordinator
+# keys_url = "https://archipelag.io/.well-known/cosign-keys.json"
+
+# Registries where unsigned workloads are allowed (dev only)
+# unsigned_allowed_registries = ["localhost:5000"]
+
+# Path to cache fetched keys locally
+# key_cache_path = "/tmp/archipelag-keys"
+
+# =============================================================================
+# REGISTRY ALLOWLIST (supply chain security)
+# =============================================================================
+
+[registry]
+# Enable registry allowlist enforcement (default: true)
+# When enabled, only images from approved registries can be executed
+enabled = true
+
+# Allowed registry prefixes
+# If empty, uses built-in defaults: ghcr.io/archipelag-io, docker.io/archipelag, docker.io/library
+# allowed = ["ghcr.io/archipelag-io", "docker.io/archipelag"]
+
+# Require images to have a pinned digest (sha256:...)
+# Set to true in production for maximum supply chain security
+require_digest = false
+
+# =============================================================================
+# TLS CERTIFICATE PINNING (optional)
+# =============================================================================
+
+[security.tls]
+# Enable TLS certificate pinning (default: true)
+enabled = true
+
+# SHA256 fingerprint of trusted CA certificate
+# ca_fingerprint = "sha256:AB:CD:..."
+
+# Allow fallback to system root certificates (default: true, set false in production)
+allow_fallback = true
