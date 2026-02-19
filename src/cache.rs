@@ -314,6 +314,27 @@ impl CacheManager {
         debug!("Cleaned up warm workloads, {} remaining", warm.len());
     }
 
+    /// Evict least-recently-used images when max_cached_images is exceeded.
+    ///
+    /// Removes entries from the tracking map only. Docker image pruning is a
+    /// separate concern (unsafe to do automatically during job execution).
+    pub async fn evict_lru(&self) -> usize {
+        let stats = self.get_stats().await;
+        if stats.cached_image_count <= self.config.max_cached_images {
+            return 0;
+        }
+        let excess = stats.cached_image_count - self.config.max_cached_images;
+        let mut cache = self.cached_images.write().await;
+        // Sort by last_used ascending (oldest first), remove oldest
+        let mut entries: Vec<_> = cache.iter().map(|(k, v)| (k.clone(), v.last_used)).collect();
+        entries.sort_by_key(|(_, t)| *t);
+        let to_remove: Vec<String> = entries.into_iter().take(excess).map(|(k, _)| k).collect();
+        for key in &to_remove {
+            cache.remove(key);
+        }
+        to_remove.len()
+    }
+
     /// Get cache statistics for heartbeat reporting
     pub async fn get_stats(&self) -> CacheStats {
         let cache = self.cached_images.read().await;

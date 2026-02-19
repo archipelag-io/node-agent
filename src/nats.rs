@@ -58,7 +58,8 @@ pub struct RegisterHost {
     pub version: String,
 }
 
-/// Heartbeat message (basic)
+/// Heartbeat message (basic — retained as fallback; enhanced heartbeat is preferred)
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct Heartbeat {
     pub host_id: String,
@@ -68,7 +69,6 @@ pub struct Heartbeat {
 }
 
 /// Enhanced heartbeat message with detailed metrics
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct EnhancedHeartbeat {
     pub host_id: String,
@@ -91,7 +91,6 @@ pub struct EnhancedHeartbeat {
 }
 
 /// Cache metrics snapshot for heartbeat
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct CacheMetricsSnapshot {
     /// Number of cached container images
@@ -105,7 +104,6 @@ pub struct CacheMetricsSnapshot {
 }
 
 /// System metrics snapshot for heartbeat
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct SystemMetricsSnapshot {
     pub cpu_percent: f32,
@@ -116,7 +114,6 @@ pub struct SystemMetricsSnapshot {
 }
 
 /// GPU metrics snapshot for heartbeat
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct GpuMetricsSnapshot {
     pub index: u32,
@@ -128,7 +125,6 @@ pub struct GpuMetricsSnapshot {
 }
 
 /// Active job metrics for heartbeat
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ActiveJobMetrics {
     pub job_id: String,
@@ -389,7 +385,8 @@ impl NatsAgent {
         Ok(subscriber)
     }
 
-    /// Send heartbeat (basic)
+    /// Send heartbeat (basic — retained as fallback; enhanced heartbeat is preferred)
+    #[allow(dead_code)]
     pub async fn send_heartbeat(&self, active_jobs: u32) -> Result<()> {
         let msg = Heartbeat {
             host_id: self.host_id.clone(),
@@ -410,7 +407,6 @@ impl NatsAgent {
     }
 
     /// Send enhanced heartbeat with detailed metrics
-    #[allow(dead_code)]
     pub async fn send_enhanced_heartbeat(
         &self,
         active_jobs: u32,
@@ -544,7 +540,6 @@ impl NatsAgent {
     }
 
     /// Get the host ID
-    #[allow(dead_code)]
     pub fn host_id(&self) -> &str {
         &self.host_id
     }

@@ -6,10 +6,16 @@ use crate::cache::CacheManager;
 use crate::config::AgentConfig;
 use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
-use crate::nats::{self, AssignJob, CancelJob, HostCapabilities, JobSubscription, NatsAgent};
+use crate::metrics::collect_system_metrics;
+use crate::metrics::gpu::GpuMetricsCollector;
+use crate::nats::{
+    self, AssignJob, CacheMetricsSnapshot, CancelJob, GpuMetricsSnapshot, HostCapabilities,
+    JobSubscription, NatsAgent, SystemMetricsSnapshot,
+};
 use crate::security::registry::RegistryAllowlist;
 use crate::security::signing::SignatureVerifier;
 use crate::state::StateManager;
+use crate::update::UpdateChecker;
 use crate::wasm::{WasmConfig, WasmExecutor, WasmOutput};
 use anyhow::{Context, Result};
 use bollard::Docker;
@@ -168,6 +174,24 @@ impl Agent {
 
         let mut consecutive_failures: u32 = 0;
 
+        // GPU metrics collector
+        let mut gpu_collector = GpuMetricsCollector::new();
+
+        // Cache cleanup interval (every 5 minutes)
+        let mut cache_cleanup_interval = tokio::time::interval(Duration::from_secs(300));
+        cache_cleanup_interval.tick().await; // consume first immediate tick
+
+        // Update checker (30 min interval; has internal rate limiting with jitter)
+        let mut update_checker = match UpdateChecker::new(&self.config, self.nats.host_id().to_string()) {
+            Ok(checker) => Some(checker),
+            Err(e) => {
+                warn!("Failed to initialize update checker: {}", e);
+                None
+            }
+        };
+        let mut update_check_interval = tokio::time::interval(Duration::from_secs(1800));
+        update_check_interval.tick().await; // consume first immediate tick
+
         // Heartbeat interval
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
 
@@ -178,7 +202,38 @@ impl Agent {
                 // Heartbeat tick
                 _ = heartbeat_interval.tick() => {
                     let active = self.active_jobs.load(Ordering::Relaxed);
-                    if let Err(e) = self.nats.send_heartbeat(active).await {
+
+                    let gpu_metrics = gpu_collector.collect().map(|gpus| {
+                        gpus.into_iter().map(|g| GpuMetricsSnapshot {
+                            index: g.index,
+                            utilization_percent: g.utilization_percent,
+                            memory_used_mb: g.memory_used_mb,
+                            memory_total_mb: g.memory_total_mb,
+                            temperature_c: g.temperature_c,
+                            power_draw_w: g.power_draw_w,
+                        }).collect()
+                    });
+
+                    let sys = collect_system_metrics();
+                    let system_snapshot = Some(SystemMetricsSnapshot {
+                        cpu_percent: sys.cpu_percent,
+                        memory_used_mb: sys.memory_used_mb,
+                        memory_total_mb: sys.memory_total_mb,
+                        disk_used_gb: sys.disk_used_gb,
+                        disk_total_gb: sys.disk_total_gb,
+                    });
+
+                    let cache_stats = self.cache.get_stats().await;
+                    let cache_snapshot = Some(CacheMetricsSnapshot {
+                        cached_image_count: cache_stats.cached_image_count,
+                        cached_size_mb: cache_stats.cached_size_mb,
+                        warm_workload_count: cache_stats.warm_workload_count,
+                        warm_workload_ids: cache_stats.warm_workload_ids,
+                    });
+
+                    if let Err(e) = self.nats.send_enhanced_heartbeat(
+                        active, system_snapshot, gpu_metrics, None, cache_snapshot
+                    ).await {
                         warn!("Failed to send heartbeat: {}", e);
                         consecutive_failures += 1;
 
@@ -266,6 +321,34 @@ impl Agent {
                             } else {
                                 debug!("Job {} not found in active jobs (may have already completed)", cancel.job_id);
                             }
+                        }
+                    }
+                }
+
+                // Cache cleanup (every 5 minutes)
+                _ = cache_cleanup_interval.tick() => {
+                    self.cache.cleanup_stale().await;
+                    let evicted = self.cache.evict_lru().await;
+                    if evicted > 0 {
+                        info!(evicted_count = evicted, "Cache LRU eviction completed");
+                    }
+                }
+
+                // Update check (every 30 minutes)
+                _ = update_check_interval.tick() => {
+                    if let Some(ref mut checker) = update_checker {
+                        match checker.check_for_update().await {
+                            Ok(Some(info)) => {
+                                warn!(
+                                    current = %checker.current_version(),
+                                    latest = ?info.latest_version,
+                                    critical = info.is_critical,
+                                    "Update available"
+                                );
+                                // Log only — auto-download deferred (placeholder signing key)
+                            }
+                            Ok(None) => {} // No update or rate-limited
+                            Err(e) => debug!(error = %e, "Update check failed"),
                         }
                     }
                 }
