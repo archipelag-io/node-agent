@@ -39,7 +39,7 @@ nats_url = "nats://localhost:4222"
 
 [workload]
 # Container image for LLM chat workload
-llm_chat_image = "llm-chat:latest"
+llm_chat_image = "ghcr.io/archipelag-io/llm-chat:latest"
 
 # GPU device IDs to pass through to containers (NVIDIA)
 # Use ["0"] for single GPU, ["0", "1"] for multi-GPU, [] for CPU-only
