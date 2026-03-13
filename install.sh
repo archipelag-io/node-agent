@@ -175,6 +175,9 @@ setup_path() {
         return
     fi
 
+    # Create parent directory if needed (e.g. ~/.config/fish/)
+    mkdir -p "$(dirname "$RC_FILE")"
+
     info "Adding $BIN_DIR to PATH in $RC_FILE"
     echo "" >> "$RC_FILE"
     echo "# Archipelag.io" >> "$RC_FILE"
