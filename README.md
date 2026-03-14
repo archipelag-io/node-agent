@@ -1,10 +1,10 @@
 # Archipelag.io Island
 
-The Island software runs on contributor machines and executes workloads dispatched by the coordinator. It supports Docker containers, WASM modules, and reports hardware capabilities and metrics.
+The Island software runs on contributor machines and executes Cargos dispatched by the coordinator. It supports Docker containers, WASM modules, and reports hardware capabilities and metrics.
 
 ## Features
 
-- **Container execution** — Docker-based workloads with GPU passthrough (NVIDIA)
+- **Container execution** — Docker-based Cargos with GPU passthrough (NVIDIA)
 - **WASM execution** — Wasmtime runtime with WASI, fuel metering, and timeout enforcement
 - **NATS with JetStream** — Durable job subscriptions with ack-on-spawn, core NATS fallback
 - **Heartbeat & metrics** — System, GPU, and cache metrics reported every 10 seconds
