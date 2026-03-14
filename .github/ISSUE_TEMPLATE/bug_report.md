@@ -26,7 +26,7 @@ assignees: ""
 
 ## Environment
 
-- **Island version:** `archipelag-island --version`
+- **Island version:** `island --version`
 - **Rust version (if building from source):** `rustc --version`
 - **OS and architecture:** (e.g., Ubuntu 22.04 x86_64)
 - **Docker version:** `docker --version`

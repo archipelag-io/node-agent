@@ -11,7 +11,7 @@ The Island software runs on contributor machines and executes workloads dispatch
 - **Security** — Cosign signature verification, registry allowlist, seccomp profiles per sandbox tier
 - **Image caching** — LRU eviction, warm workload tracking, pre-pull on startup
 - **Self-update** — Polls coordinator for new versions, Ed25519 signature verification
-- **Persistent state** — Pairing status and WASM cache in `~/.archipelag/`
+- **Persistent state** — Pairing status and WASM cache in `~/.island/`
 
 ## Requirements
 
@@ -31,7 +31,7 @@ cargo build
 
 # Release build (LTO + stripped)
 cargo build --release
-# Binary: target/release/archipelag-island
+# Binary: target/release/island
 ```
 
 ## Configuration
@@ -112,7 +112,7 @@ cargo run -- --test-wasm path/to/module.wasm --wasm-input '{"key":"value"}'
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RUST_LOG` | `info` | Log level filter (e.g., `debug`, `archipelag_island=trace`) |
+| `RUST_LOG` | `info` | Log level filter (e.g., `debug`, `archipelag_agent=trace`) |
 | `ARCHIPELAG_LOG_JSON` | unset | Enable JSON structured logging |
 | `RUST_BACKTRACE` | unset | Show panic backtraces (`1` or `full`) |
 
@@ -140,7 +140,7 @@ src/
 │                            #   - Fuel metering, timeout, hash verification
 ├── cache.rs                 # Image & WASM module caching
 │                            #   - LRU eviction, warm workload tracking
-├── state.rs                 # Persistent state (~/.archipelag/)
+├── state.rs                 # Persistent state (~/.island/)
 │                            #   - Pairing status, WASM cache
 ├── metrics/
 │   ├── mod.rs               # Metrics aggregation (system, job)

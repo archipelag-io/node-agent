@@ -43,7 +43,7 @@ impl RestartManager {
     pub fn new() -> Result<Self, UpdateError> {
         let current_binary = std::env::current_exe().map_err(UpdateError::Io)?;
 
-        // Use ~/.archipelag/backups for old binaries
+        // Use ~/.island/backups for old binaries
         let backup_dir = dirs::home_dir()
             .ok_or_else(|| {
                 UpdateError::Io(std::io::Error::new(
@@ -51,7 +51,7 @@ impl RestartManager {
                     "Could not find home directory",
                 ))
             })?
-            .join(".archipelag")
+            .join(".island")
             .join("backups");
 
         Ok(Self {

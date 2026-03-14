@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
 /// Default state directory (relative to home)
-const STATE_DIR: &str = ".archipelag";
+const STATE_DIR: &str = ".island";
 /// State file name
 const STATE_FILE: &str = "state.json";
 /// WASM cache directory name

@@ -4,16 +4,16 @@
 #
 # Environment variables:
 #   ARCHIPELAG_VERSION  - Version to install (default: latest)
-#   ARCHIPELAG_DIR      - Install directory (default: ~/.archipelag)
+#   ISLAND_DIR          - Install directory (default: ~/.island)
 #   SKIP_DOCKER         - Set to 1 to skip Docker setup
 
 set -e
 
 REPO="archipelag-io/node-agent"
-INSTALL_DIR="${ARCHIPELAG_DIR:-$HOME/.archipelag}"
+INSTALL_DIR="${ISLAND_DIR:-$HOME/.island}"
 BIN_DIR="$INSTALL_DIR/bin"
 CONFIG_DIR="$INSTALL_DIR"
-BINARY_NAME="archipelag-island"
+BINARY_NAME="island"
 
 # Colors (disabled if not a terminal)
 if [ -t 1 ]; then
@@ -282,7 +282,7 @@ setup_path() {
 
     info "Adding $BIN_DIR to PATH in $RC_FILE"
     echo "" >> "$RC_FILE"
-    echo "# Archipelag.io" >> "$RC_FILE"
+    echo "# Archipelag.io Island" >> "$RC_FILE"
     echo "$EXPORT_LINE" >> "$RC_FILE"
 }
 
@@ -306,11 +306,11 @@ print_success() {
 
     case ":$PATH:" in
         *":$BIN_DIR:"*)
-            printf "  archipelag-island --agent --config %s\n" "$CONFIG_DIR/config.toml"
+            printf "  island --agent --config %s\n" "$CONFIG_DIR/config.toml"
             ;;
         *)
             printf "  source %s\n" "$RC_FILE"
-            printf "  archipelag-island --agent --config %s\n" "$CONFIG_DIR/config.toml"
+            printf "  island --agent --config %s\n" "$CONFIG_DIR/config.toml"
             ;;
     esac
 

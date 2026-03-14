@@ -28,7 +28,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "archipelag-island")]
+#[command(name = "island")]
 #[command(about = "Island software for the Archipelag.io distributed compute network")]
 struct Args {
     /// Path to configuration file
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    info!("Starting archipelag-island v{}", env!("CARGO_PKG_VERSION"));
+    info!("Starting island v{}", env!("CARGO_PKG_VERSION"));
 
     // Load configuration
     let config = config::load(&args.config)?;

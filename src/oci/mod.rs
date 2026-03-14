@@ -23,7 +23,7 @@ const LAYERS_DIR: &str = "layers";
 
 /// OCI container manager — alternative to Docker for Linux hosts
 pub struct OciManager {
-    /// Base directory for OCI data (~/.archipelag/oci/)
+    /// Base directory for OCI data (~/.island/oci/)
     base_dir: PathBuf,
     /// Path to the crun binary
     runtime_path: PathBuf,
@@ -47,7 +47,7 @@ impl OciManager {
 
     /// Find the crun binary — check bundled location first, then PATH
     fn find_runtime(data_dir: &Path) -> Result<PathBuf> {
-        // 1. Check bundled location (~/.archipelag/bin/crun)
+        // 1. Check bundled location (~/.island/bin/crun)
         let bundled = data_dir.join("bin").join("crun");
         if bundled.exists() {
             debug!("Using bundled crun: {}", bundled.display());

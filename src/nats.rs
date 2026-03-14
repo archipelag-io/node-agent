@@ -311,7 +311,7 @@ impl NatsAgent {
     /// Connect to NATS server
     pub async fn connect(nats_url: &str, host_id: String) -> Result<Self> {
         let mut options = ConnectOptions::new()
-            .name(format!("archipelag-island-{}", &host_id[..8]))
+            .name(format!("island-{}", &host_id[..8]))
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(10))
             .ping_interval(Duration::from_secs(10))

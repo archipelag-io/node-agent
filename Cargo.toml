@@ -1,13 +1,13 @@
 [package]
 name = "archipelag-agent"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 description = "Island software for the Archipelag.io distributed compute network"
 authors = ["archipelag.io <hello@archipelag.io>"]
 license = "MIT"
 
 [[bin]]
-name = "archipelag-island"
+name = "island"
 path = "src/main.rs"
 
 [dependencies]
