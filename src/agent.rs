@@ -8,9 +8,10 @@ use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
 use crate::metrics::collect_system_metrics;
 use crate::metrics::gpu::GpuMetricsCollector;
+use crate::metrics::gpu::bandwidth_for_gpu;
 use crate::nats::{
     self, AssignJob, CacheMetricsSnapshot, CancelJob, GpuMetricsSnapshot, HostCapabilities,
-    JobSubscription, NatsAgent, SystemMetricsSnapshot,
+    JobSubscription, NatsAgent, PerformanceEstimates, SystemMetricsSnapshot,
 };
 use crate::security::registry::RegistryAllowlist;
 use crate::security::signing::SignatureVerifier;
@@ -234,8 +235,10 @@ impl Agent {
                         warm_workload_ids: cache_stats.warm_workload_ids,
                     });
 
+                    let perf_estimates = self.compute_performance_estimates(&capabilities);
+
                     if let Err(e) = self.nats.send_enhanced_heartbeat(
-                        active, system_snapshot, gpu_metrics, None, cache_snapshot
+                        active, system_snapshot, gpu_metrics, None, cache_snapshot, Some(perf_estimates)
                     ).await {
                         warn!("Failed to send heartbeat: {}", e);
                         consecutive_failures += 1;
@@ -465,6 +468,56 @@ impl Agent {
         );
 
         capabilities
+    }
+
+    /// Compute performance estimates from hardware capabilities.
+    /// These are sent with each heartbeat so the coordinator can rank hosts.
+    fn compute_performance_estimates(&self, capabilities: &HostCapabilities) -> PerformanceEstimates {
+        let gpu_bw = capabilities.gpu_model.as_deref().map(|model| {
+            bandwidth_for_gpu(Some(model), capabilities.gpu_vram_mb)
+        });
+
+        // Estimate LLM tok/s for a reference 7B Q4_K_M model (~4.5 GB)
+        let reference_model_size_gb: f32 = 4.5;
+        let estimated_llm_tok_s = gpu_bw.map(|bw| {
+            let efficiency = 0.55;
+            let mode_factor = match capabilities.gpu_vram_mb {
+                Some(vram) if vram >= (reference_model_size_gb * 1024.0) as u32 => 1.0_f32,
+                Some(_) => 0.5,
+                None => 0.3,
+            };
+            (bw / reference_model_size_gb * efficiency * mode_factor).round()
+        });
+
+        // Max concurrent containers: min(CPU / 2, RAM / 2048) — each container gets at least 2 cores and 2 GB
+        let max_containers = std::cmp::min(
+            capabilities.cpu_cores / 2,
+            capabilities.ram_mb / 2048,
+        ).max(1);
+
+        // WASM memory: allow up to 75% of RAM for WASM linear memory
+        let wasm_mem = capabilities.ram_mb * 3 / 4;
+
+        // Supported runtimes — container and wasm are always available
+        let runtimes = vec!["container".to_string(), "wasm".to_string()];
+
+        let estimates = PerformanceEstimates {
+            gpu_bandwidth_gb_s: gpu_bw,
+            estimated_llm_tok_s,
+            max_concurrent_containers: Some(max_containers),
+            wasm_memory_limit_mb: Some(wasm_mem),
+            supported_runtimes: runtimes,
+        };
+
+        debug!(
+            "Performance estimates: bandwidth={:?} GB/s, llm_tok_s={:?}, max_containers={}, wasm_mem={}MB",
+            estimates.gpu_bandwidth_gb_s,
+            estimates.estimated_llm_tok_s,
+            max_containers,
+            wasm_mem
+        );
+
+        estimates
     }
 
     /// Check if host needs pairing and request a pairing code if so

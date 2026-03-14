@@ -88,6 +88,25 @@ pub struct EnhancedHeartbeat {
     /// Cache statistics for cold-start optimization
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheMetricsSnapshot>,
+    /// Performance estimates for workload fit scoring
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performance_estimates: Option<PerformanceEstimates>,
+}
+
+/// Performance estimates computed from hardware specs.
+/// Used by the coordinator for workload-to-host fit scoring.
+#[derive(Debug, Clone, Serialize)]
+pub struct PerformanceEstimates {
+    /// GPU memory bandwidth in GB/s (looked up from GPU model)
+    pub gpu_bandwidth_gb_s: Option<f32>,
+    /// Estimated LLM tokens/second for a 7B Q4 model
+    pub estimated_llm_tok_s: Option<f32>,
+    /// Max concurrent containers (based on CPU/RAM)
+    pub max_concurrent_containers: Option<u32>,
+    /// Wasmtime linear memory limit in MB (if WASM runtime supported)
+    pub wasm_memory_limit_mb: Option<u32>,
+    /// Supported runtime types
+    pub supported_runtimes: Vec<String>,
 }
 
 /// Cache metrics snapshot for heartbeat
@@ -414,6 +433,7 @@ impl NatsAgent {
         gpus: Option<Vec<GpuMetricsSnapshot>>,
         active_job_metrics: Option<Vec<ActiveJobMetrics>>,
         cache: Option<CacheMetricsSnapshot>,
+        performance_estimates: Option<PerformanceEstimates>,
     ) -> Result<()> {
         let msg = EnhancedHeartbeat {
             host_id: self.host_id.clone(),
@@ -425,6 +445,7 @@ impl NatsAgent {
             gpus,
             active_job_metrics,
             cache,
+            performance_estimates,
         };
 
         let payload = serde_json::to_vec(&msg).context("Failed to serialize enhanced heartbeat")?;

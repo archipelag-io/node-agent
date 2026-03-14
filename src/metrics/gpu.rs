@@ -19,7 +19,9 @@
 //! - More detailed metrics
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
@@ -265,6 +267,181 @@ fn parse_gpu_metrics_line(line: &str, timestamp: u64) -> Option<GpuMetrics> {
     })
 }
 
+// ============================================================================
+// GPU Memory Bandwidth Lookup
+// ============================================================================
+
+/// GPU memory bandwidth table (GB/s) for performance estimation.
+/// Used to estimate LLM tokens/second: tok/s ≈ bandwidth / model_size_GB × efficiency
+static GPU_BANDWIDTH: LazyLock<HashMap<&'static str, f32>> = LazyLock::new(|| {
+    HashMap::from([
+        // NVIDIA Data Center / HPC
+        ("h100 sxm", 3350.0),
+        ("h100 pcie", 2039.0),
+        ("h100", 3350.0),
+        ("h200", 4800.0),
+        ("a100 80gb", 2039.0),
+        ("a100 40gb", 1555.0),
+        ("a100", 2039.0),
+        ("a40", 696.0),
+        ("a30", 933.0),
+        ("a10g", 600.0),
+        ("a10", 600.0),
+        ("l40s", 864.0),
+        ("l40", 864.0),
+        ("l4", 300.0),
+        ("v100", 900.0),
+        ("t4", 320.0),
+        ("p100", 732.0),
+        // NVIDIA Workstation
+        ("rtx a6000", 768.0),
+        ("rtx a5000", 768.0),
+        ("rtx a4000", 448.0),
+        ("a6000", 768.0),
+        ("a5000", 768.0),
+        ("a4000", 448.0),
+        // NVIDIA GeForce RTX 50 series
+        ("rtx 5090", 1792.0),
+        ("rtx 5080", 960.0),
+        ("rtx 5070 ti", 896.0),
+        ("rtx 5070", 672.0),
+        // NVIDIA GeForce RTX 40 series
+        ("rtx 4090", 1008.0),
+        ("rtx 4080 super", 736.0),
+        ("rtx 4080", 716.8),
+        ("rtx 4070 ti super", 672.0),
+        ("rtx 4070 ti", 504.0),
+        ("rtx 4070 super", 504.0),
+        ("rtx 4070", 504.0),
+        ("rtx 4060 ti", 288.0),
+        ("rtx 4060", 272.0),
+        // NVIDIA GeForce RTX 30 series
+        ("rtx 3090 ti", 1008.0),
+        ("rtx 3090", 936.2),
+        ("rtx 3080 ti", 912.4),
+        ("rtx 3080", 760.3),
+        ("rtx 3070 ti", 608.3),
+        ("rtx 3070", 448.0),
+        ("rtx 3060 ti", 448.0),
+        ("rtx 3060", 360.0),
+        ("rtx 3050", 224.0),
+        // NVIDIA GeForce RTX 20 series
+        ("titan rtx", 672.0),
+        ("rtx 2080 ti", 616.0),
+        ("rtx 2080 super", 496.0),
+        ("rtx 2080", 448.0),
+        ("rtx 2070 super", 448.0),
+        ("rtx 2070", 448.0),
+        ("rtx 2060 super", 448.0),
+        ("rtx 2060", 336.0),
+        // NVIDIA GeForce GTX 10/16 series
+        ("gtx 1080 ti", 484.0),
+        ("gtx 1080", 320.0),
+        ("gtx 1070 ti", 256.3),
+        ("gtx 1070", 256.3),
+        ("gtx 1060", 192.0),
+        ("gtx 1660 super", 336.0),
+        ("gtx 1660 ti", 288.0),
+        ("gtx 1660", 192.0),
+        ("gtx 1650 super", 192.0),
+        ("gtx 1650", 128.0),
+        // AMD Radeon RX 7000 series
+        ("rx 7900 xtx", 960.0),
+        ("rx 7900 xt", 800.0),
+        ("rx 7800 xt", 624.0),
+        ("rx 7700 xt", 432.0),
+        ("rx 7600", 288.0),
+        // AMD Radeon RX 6000 series
+        ("rx 6950 xt", 576.0),
+        ("rx 6900 xt", 512.0),
+        ("rx 6800 xt", 512.0),
+        ("rx 6800", 512.0),
+        ("rx 6700 xt", 384.0),
+        ("rx 6600 xt", 256.0),
+        ("rx 6600", 224.0),
+        // AMD Instinct
+        ("mi300x", 5300.0),
+        ("mi250x", 3276.0),
+        ("mi250", 3276.0),
+        ("mi210", 1638.0),
+        ("mi100", 1228.0),
+        // Apple Silicon
+        ("apple m4 ultra", 819.2),
+        ("apple m4 max", 546.0),
+        ("apple m4 pro", 273.0),
+        ("apple m4", 120.0),
+        ("apple m3 ultra", 800.0),
+        ("apple m3 max", 400.0),
+        ("apple m3 pro", 150.0),
+        ("apple m3", 100.0),
+        ("apple m2 ultra", 800.0),
+        ("apple m2 max", 400.0),
+        ("apple m2 pro", 200.0),
+        ("apple m2", 100.0),
+        ("apple m1 ultra", 800.0),
+        ("apple m1 max", 400.0),
+        ("apple m1 pro", 200.0),
+        ("apple m1", 68.25),
+        // Intel Arc
+        ("arc a770", 560.0),
+        ("arc a750", 512.0),
+        ("arc a380", 186.0),
+    ])
+});
+
+/// Look up GPU memory bandwidth in GB/s from a GPU model name.
+///
+/// Normalizes the input (strips vendor prefix, lowercases) and tries
+/// exact match first, then substring match (longest key wins).
+pub fn lookup_bandwidth(gpu_model: &str) -> Option<f32> {
+    let normalized = normalize_gpu_name(gpu_model);
+
+    // Exact match first
+    if let Some(&bw) = GPU_BANDWIDTH.get(normalized.as_str()) {
+        return Some(bw);
+    }
+
+    // Fuzzy: find longest key contained in the normalized string
+    GPU_BANDWIDTH
+        .iter()
+        .filter(|(key, _)| normalized.contains(**key))
+        .max_by_key(|(key, _)| key.len())
+        .map(|(_, &bw)| bw)
+}
+
+/// Estimate bandwidth from VRAM when GPU model is unknown (conservative: ~40 GB/s per GB VRAM).
+pub fn estimate_bandwidth_from_vram(vram_mb: u32) -> f32 {
+    if vram_mb == 0 {
+        return 200.0;
+    }
+    let vram_gb = vram_mb as f32 / 1024.0;
+    vram_gb * 40.0
+}
+
+/// Get bandwidth for a GPU, falling back to VRAM-based estimate.
+pub fn bandwidth_for_gpu(gpu_model: Option<&str>, gpu_vram_mb: Option<u32>) -> f32 {
+    if let Some(model) = gpu_model {
+        if let Some(bw) = lookup_bandwidth(model) {
+            return bw;
+        }
+    }
+    estimate_bandwidth_from_vram(gpu_vram_mb.unwrap_or(0))
+}
+
+/// Normalize GPU model string for matching.
+fn normalize_gpu_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    // Strip common vendor prefixes
+    let stripped = lower
+        .replace("nvidia", "")
+        .replace("geforce", "")
+        .replace("amd", "")
+        .replace("radeon", "")
+        .replace("intel", "");
+    // Collapse whitespace
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +489,47 @@ mod tests {
         let collector = GpuMetricsCollector::new();
         assert!(collector.gpu_info.is_none());
         assert!(collector.cached_metrics.is_none());
+    }
+
+    #[test]
+    fn test_lookup_bandwidth_known_gpu() {
+        let bw = lookup_bandwidth("NVIDIA GeForce RTX 3090").unwrap();
+        assert!((bw - 936.2).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_lookup_bandwidth_case_insensitive() {
+        let bw = lookup_bandwidth("nvidia geforce rtx 4090").unwrap();
+        assert!((bw - 1008.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_lookup_bandwidth_unknown() {
+        assert!(lookup_bandwidth("Mystery GPU 9000").is_none());
+    }
+
+    #[test]
+    fn test_bandwidth_for_gpu_with_known_model() {
+        let bw = bandwidth_for_gpu(Some("NVIDIA GeForce RTX 3090"), Some(24576));
+        assert!((bw - 936.2).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_bandwidth_for_gpu_unknown_model_falls_back_to_vram() {
+        let bw = bandwidth_for_gpu(Some("Unknown GPU"), Some(8192));
+        // 8 GB * 40 = 320
+        assert!((bw - 320.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_bandwidth_for_gpu_no_gpu() {
+        let bw = bandwidth_for_gpu(None, None);
+        assert!((bw - 200.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_estimate_bandwidth_from_vram() {
+        assert!((estimate_bandwidth_from_vram(24576) - 960.0).abs() < 1.0);
+        assert!((estimate_bandwidth_from_vram(0) - 200.0).abs() < 0.1);
     }
 }
