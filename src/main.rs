@@ -54,6 +54,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls crypto provider for TLS connections (NATS, OCI registry)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize logging with RUST_LOG support (default: info)
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));

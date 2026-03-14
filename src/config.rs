@@ -22,9 +22,11 @@ pub struct AgentConfig {
 
     /// Docker settings (reserved for future custom socket config)
     #[allow(dead_code)]
+    #[serde(default)]
     pub docker: DockerConfig,
 
     /// Workload settings
+    #[serde(default)]
     pub workload: WorkloadConfig,
 
     /// Cache settings for cold-start optimization
@@ -90,7 +92,7 @@ pub struct CoordinatorConfig {
 
 /// Docker configuration (reserved for future use)
 #[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct DockerConfig {
     /// Docker socket path (default: unix:///var/run/docker.sock)
     pub socket: Option<String>,
@@ -99,6 +101,7 @@ pub struct DockerConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct WorkloadConfig {
     /// Default container image for LLM chat
+    #[serde(default = "default_llm_chat_image")]
     pub llm_chat_image: String,
 
     /// GPU device IDs to use (e.g., ["0"] or ["0", "1"])
@@ -149,6 +152,20 @@ fn default_tmpfs_size_mb() -> u64 {
 
 fn default_network_disabled() -> bool {
     true
+}
+
+fn default_llm_chat_image() -> String {
+    "ghcr.io/archipelag-io/llm-chat:latest".to_string()
+}
+
+impl Default for WorkloadConfig {
+    fn default() -> Self {
+        Self {
+            llm_chat_image: default_llm_chat_image(),
+            gpu_devices: None,
+            resource_limits: ResourceLimits::default(),
+        }
+    }
 }
 
 impl Default for ResourceLimits {

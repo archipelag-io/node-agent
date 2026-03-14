@@ -1,6 +1,6 @@
 [package]
 name = "archipelag-agent"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Island software for the Archipelag.io distributed compute network"
 authors = ["archipelag.io <hello@archipelag.io>"]
@@ -19,6 +19,9 @@ wasmtime-wasi = "27"
 
 # NATS client
 async-nats = "0.38"
+
+# TLS crypto provider (required for rustls when connecting to NATS over TLS)
+rustls = { version = "0.23", features = ["ring"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

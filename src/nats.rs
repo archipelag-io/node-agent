@@ -269,19 +269,37 @@ pub struct NatsAgent {
 impl NatsAgent {
     /// Connect to NATS server
     pub async fn connect(nats_url: &str, host_id: String) -> Result<Self> {
-        let options = ConnectOptions::new()
+        let mut options = ConnectOptions::new()
             .name(format!("archipelag-island-{}", &host_id[..8]))
             .retry_on_initial_connect()
             .connection_timeout(Duration::from_secs(10))
             .ping_interval(Duration::from_secs(10))
             .max_reconnects(None); // Reconnect forever
 
+        // Parse credentials from URL (e.g., tls://user:pass@host:port)
+        let connect_url = if let Some(at_pos) = nats_url.find('@') {
+            let scheme_end = nats_url.find("://").map(|p| p + 3).unwrap_or(0);
+            let userinfo = &nats_url[scheme_end..at_pos];
+            if let Some(colon) = userinfo.find(':') {
+                let user = &userinfo[..colon];
+                let pass = &userinfo[colon + 1..];
+                options = options.user_and_password(user.to_string(), pass.to_string());
+            }
+            // Reconstruct URL without credentials
+            let scheme = &nats_url[..scheme_end];
+            let host_part = &nats_url[at_pos + 1..];
+            format!("{}{}", scheme, host_part)
+        } else {
+            nats_url.to_string()
+        };
+
         let client = options
-            .connect(nats_url)
+            .connect(&connect_url)
             .await
             .context("Failed to connect to NATS")?;
 
-        info!("Connected to NATS at {}", nats_url);
+        // Log URL without credentials
+        info!("Connected to NATS at {}", connect_url);
 
         Ok(Self { client, host_id })
     }
