@@ -26,7 +26,7 @@ pub async fn pull_image(image: &str, cache_dir: &Path) -> Result<()> {
         protocol: ClientProtocol::Https,
         ..Default::default()
     };
-    let mut client = Client::new(client_config);
+    let client = Client::new(client_config);
 
     // Use anonymous auth (public images)
     let auth = RegistryAuth::Anonymous;
@@ -102,7 +102,7 @@ pub async fn pull_image(image: &str, cache_dir: &Path) -> Result<()> {
 
 /// Sanitize an image name for use as a directory name
 pub(crate) fn sanitize_image_name(image: &str) -> String {
-    image.replace('/', "_").replace(':', "_").replace('@', "_")
+    image.replace(['/', ':', '@'], "_")
 }
 
 #[cfg(test)]

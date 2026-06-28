@@ -16,7 +16,10 @@ pipeline = ["dep:quinn", "dep:rcgen", "dep:llama-cpp-sys-2", "dep:base64", "dep:
 onnx = ["dep:ort", "dep:ndarray", "dep:tokenizers", "dep:image", "dep:base64"]
 gguf = ["dep:llama-cpp-2", "dep:encoding_rs"]
 diffusers = ["dep:candle-core", "dep:candle-transformers", "dep:candle-nn", "dep:tokenizers", "dep:image", "dep:base64", "dep:hf-hub"]
-all-runtimes = ["onnx", "gguf", "diffusers", "pipeline"]
+# Exo multi-Island clustering. Delegates sharding to a local `exo` subprocess and
+# talks to it over HTTP, so it needs no native ML deps (reqwest/tokio/serde only).
+exo = []
+all-runtimes = ["onnx", "gguf", "diffusers", "pipeline", "exo"]
 
 [dependencies]
 # Async runtime

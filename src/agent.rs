@@ -894,6 +894,22 @@ async fn execute_job(
         }
     }
 
+    // Check for exo config — multi-Island Exo cluster jobs bypass normal dispatch
+    #[cfg(feature = "exo")]
+    if let Some(ref exo_value) = job.exo_config {
+        match serde_json::from_value::<crate::exo::ExoConfig>(exo_value.clone()) {
+            Ok(exo_config) => {
+                return crate::exo::execute_exo_job(nats, state, &job, exo_config, cancel_rx).await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to parse exo_config: {}, falling back to normal dispatch",
+                    e
+                );
+            }
+        }
+    }
+
     // Route based on runtime type
     match job.runtime_type.as_str() {
         "wasm" => execute_wasm_job(nats, state, &job, cancel_rx).await,

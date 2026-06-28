@@ -4,6 +4,11 @@
 //! and runs containers using a bundled OCI runtime (crun).
 //!
 //! This enables Linux hosts to run container workloads without Docker installed.
+//!
+//! NOTE: This module is built (Linux-only) but not yet wired into the dispatch
+//! path, so its items are currently unused — allow dead_code module-wide until
+//! it's hooked up, rather than littering per-item attributes.
+#![allow(dead_code)]
 
 pub mod pull;
 pub mod runtime;

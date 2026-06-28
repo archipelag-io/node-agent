@@ -84,8 +84,8 @@ pub async fn execute_gguf_job(
             .map_err(|e| anyhow::anyhow!("Failed to load GGUF model: {:?}", e))?;
 
         // Create context
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(context_size));
+        let ctx_params =
+            LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(context_size));
         let mut ctx = model
             .new_context(&backend, ctx_params)
             .map_err(|e| anyhow::anyhow!("Failed to create llama context: {:?}", e))?;
@@ -106,7 +106,8 @@ pub async fn execute_gguf_job(
         let mut batch = LlamaBatch::new(512, 1);
         for (i, &token) in tokens.iter().enumerate() {
             let is_last = i == tokens.len() - 1;
-            batch.add(token, i as i32, &[0], is_last)
+            batch
+                .add(token, i as i32, &[0], is_last)
                 .map_err(|e| anyhow::anyhow!("Failed to add token to batch: {:?}", e))?;
         }
 
@@ -156,7 +157,8 @@ pub async fn execute_gguf_job(
 
             // Prepare next batch
             batch.clear();
-            batch.add(new_token, n_cur as i32, &[0], true)
+            batch
+                .add(new_token, n_cur as i32, &[0], true)
                 .map_err(|e| anyhow::anyhow!("Failed to add token to batch: {:?}", e))?;
             n_cur += 1;
 

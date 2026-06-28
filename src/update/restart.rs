@@ -290,7 +290,7 @@ impl RestartManager {
         }
 
         // Sort by modification time (newest first)
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         // Remove all but the 3 newest
         for (path, _) in entries.iter().skip(3) {
