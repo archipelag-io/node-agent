@@ -405,19 +405,28 @@ mod tests {
     #[test]
     fn build_messages_from_chat() {
         let input = json!({"messages": [{"role": "user", "content": "hi"}]});
-        assert_eq!(build_messages(&input), json!([{"role": "user", "content": "hi"}]));
+        assert_eq!(
+            build_messages(&input),
+            json!([{"role": "user", "content": "hi"}])
+        );
     }
 
     #[test]
     fn build_messages_from_prompt() {
         let input = json!({"prompt": "hello"});
-        assert_eq!(build_messages(&input), json!([{"role": "user", "content": "hello"}]));
+        assert_eq!(
+            build_messages(&input),
+            json!([{"role": "user", "content": "hello"}])
+        );
     }
 
     #[test]
     fn build_messages_from_string() {
         let input = json!("plain");
-        assert_eq!(build_messages(&input), json!([{"role": "user", "content": "plain"}]));
+        assert_eq!(
+            build_messages(&input),
+            json!([{"role": "user", "content": "plain"}])
+        );
     }
 
     #[test]
