@@ -29,11 +29,9 @@ impl DownloadProgress {
     /// Get download progress as a percentage (0-100)
     pub fn percent(&self) -> Option<u8> {
         self.total.map(|total| {
-            if total == 0 {
-                100
-            } else {
-                ((self.downloaded * 100) / total).min(100) as u8
-            }
+            (self.downloaded * 100)
+                .checked_div(total)
+                .map_or(100, |p| p.min(100) as u8)
         })
     }
 }

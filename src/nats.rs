@@ -582,6 +582,7 @@ impl NatsAgent {
     }
 
     /// Send enhanced heartbeat with detailed metrics
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_enhanced_heartbeat(
         &self,
         active_jobs: u32,

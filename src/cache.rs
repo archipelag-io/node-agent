@@ -320,7 +320,7 @@ impl CacheManager {
             .collect();
 
         // Sort by most recent first
-        warm_list.sort_by(|a, b| a.last_run.elapsed().cmp(&b.last_run.elapsed()));
+        warm_list.sort_by_key(|a| a.last_run.elapsed());
 
         warm_list.iter().map(|w| w.workload_id.clone()).collect()
     }
@@ -372,7 +372,7 @@ impl CacheManager {
             .values()
             .filter(|w| w.last_run.elapsed() < ttl)
             .collect();
-        warm_list.sort_by(|a, b| a.last_run.elapsed().cmp(&b.last_run.elapsed()));
+        warm_list.sort_by_key(|a| a.last_run.elapsed());
 
         CacheStats {
             cached_image_count: cache.len(),
