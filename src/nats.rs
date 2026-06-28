@@ -180,7 +180,31 @@ pub struct AssignJob {
     /// Workload ID (for cache tracking) — accepts both string and integer from coordinator
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub workload_id: Option<String>,
+    /// Plaintext input for non-confidential jobs. Defaults to `Value::Null`
+    /// when the Coordinator routed a confidential job — see `encrypted_input`.
+    /// Existing extractors (e.g. `extract_prompt`) will fail fast on Null,
+    /// which is the right behavior until per-runtime decryption is wired.
+    #[serde(default)]
     pub input: serde_json::Value,
+    /// Set when the Coordinator routed an end-to-end encrypted payload.
+    /// The Island MUST decrypt `encrypted_input` inside its hardened process
+    /// using its hardware-bound private key (Apple Secure Enclave on macOS,
+    /// TPM EK on Linux). The Coordinator never sees plaintext.
+    #[serde(default)]
+    pub confidential: bool,
+    /// Wire envelope produced by `Coordinator.Confidential.Crypto.seal/2`:
+    /// `{ envelope_version, consumer_public_key, session_id, nonce, ciphertext, tag }`.
+    /// Present iff `confidential = true`.
+    #[serde(default)]
+    pub encrypted_input: Option<serde_json::Value>,
+    /// Consumer's ephemeral P-256 public key (raw X∥Y, base64). Convenience
+    /// duplicate of the field inside `encrypted_input` so we don't have to
+    /// parse the envelope just to fish it out.
+    #[serde(default)]
+    pub consumer_public_key: Option<String>,
+    /// Privacy tier the workload requires (informational; placement enforces).
+    #[serde(default)]
+    pub privacy_tier: u32,
     #[allow(dead_code)]
     pub lease_expires: i64,
     /// Runtime type: "container" or "wasm"
@@ -226,6 +250,9 @@ pub struct AssignJob {
     /// Federated training configuration (present when this is a training participant job)
     #[serde(default)]
     pub training_config: Option<serde_json::Value>,
+    /// Exo cluster configuration (present when this is an exo multi-Island job)
+    #[serde(default)]
+    pub exo_config: Option<serde_json::Value>,
 }
 
 fn default_runtime_type() -> String {
@@ -1120,6 +1147,7 @@ mod tests {
         assert_eq!(job.expert_config, None);
         assert_eq!(job.speculative_config, None);
         assert_eq!(job.training_config, None);
+        assert_eq!(job.exo_config, None);
     }
 
     #[test]
