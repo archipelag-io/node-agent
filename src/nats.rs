@@ -116,6 +116,11 @@ pub struct PerformanceEstimates {
     pub wasm_memory_limit_mb: Option<u32>,
     /// Supported runtime types
     pub supported_runtimes: Vec<String>,
+    /// Quantization-format runtimes this binary can execute (`gguf` for stock
+    /// llama.cpp; `awq`/`exl2`/`bitnet`/`q1_0` require additional forks this
+    /// agent does not yet link). Drives placement against
+    /// `workloads.quantization_format`. See the quantization-variants plan.
+    pub supported_quantization_formats: Vec<String>,
     /// Round-trip time to NATS server in milliseconds (measured via request/reply)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nats_rtt_ms: Option<f32>,
@@ -1391,6 +1396,7 @@ mod tests {
                 max_concurrent_containers: Some(4),
                 wasm_memory_limit_mb: Some(256),
                 supported_runtimes: vec!["container".to_string(), "wasm".to_string()],
+                supported_quantization_formats: vec!["gguf".to_string()],
                 nats_rtt_ms: Some(12.5),
                 public_addr: Some("1.2.3.4:5678".to_string()),
             }),
@@ -1406,6 +1412,10 @@ mod tests {
         assert_eq!(v["active_job_metrics"][0]["tokens_generated"], 150);
         assert_eq!(v["cache"]["warm_workload_count"], 2);
         assert_eq!(v["performance_estimates"]["nats_rtt_ms"], 12.5);
+        assert_eq!(
+            v["performance_estimates"]["supported_quantization_formats"][0],
+            "gguf"
+        );
         assert_eq!(v["asking_prices"]["llm-chat"], "2.0");
         assert_eq!(v["asking_prices"]["_default"], "1.0");
     }

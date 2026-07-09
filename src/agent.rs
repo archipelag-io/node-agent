@@ -1450,12 +1450,23 @@ pub(crate) fn compute_performance_estimates_from_capabilities(
     #[cfg(feature = "diffusers")]
     runtimes.push("diffusers".to_string());
 
+    // Quantization formats this binary can actually execute. Only `gguf`
+    // (stock llama.cpp, gated on the `gguf` feature) is advertised today —
+    // this agent links neither PrismML's `q1_0` fork, Microsoft's `bitnet.cpp`,
+    // nor an AWQ/EXL2 runtime, so advertising those would route jobs it cannot
+    // run. They get added here as those executors land.
+    #[allow(unused_mut)]
+    let mut quantization_formats: Vec<String> = Vec::new();
+    #[cfg(feature = "gguf")]
+    quantization_formats.push("gguf".to_string());
+
     PerformanceEstimates {
         gpu_bandwidth_gb_s: gpu_bw,
         estimated_llm_tok_s,
         max_concurrent_containers: Some(max_containers),
         wasm_memory_limit_mb: Some(wasm_mem),
         supported_runtimes: runtimes,
+        supported_quantization_formats: quantization_formats,
         nats_rtt_ms: None,
         public_addr: None,
     }
@@ -1523,6 +1534,33 @@ mod tests {
         assert_eq!(est.wasm_memory_limit_mb, Some(12288));
         assert!(est.supported_runtimes.contains(&"container".to_string()));
         assert!(est.supported_runtimes.contains(&"wasm".to_string()));
+    }
+
+    #[test]
+    fn perf_estimates_quantization_formats_track_gguf_feature() {
+        let caps = HostCapabilities {
+            gpu_model: None,
+            gpu_vram_mb: None,
+            cpu_cores: 8,
+            ram_mb: 16384,
+            region: None,
+        };
+        let est = compute_performance_estimates_from_capabilities(&caps);
+
+        // `gguf` is advertised iff the runtime is actually linked.
+        if cfg!(feature = "gguf") {
+            assert!(est
+                .supported_quantization_formats
+                .contains(&"gguf".to_string()));
+        } else {
+            assert!(est.supported_quantization_formats.is_empty());
+        }
+
+        // Never advertise a format whose runtime this agent doesn't link —
+        // doing so would route jobs the Island cannot execute.
+        for fmt in &est.supported_quantization_formats {
+            assert_eq!(fmt, "gguf", "unexpected advertised quantization format");
+        }
     }
 
     #[test]
