@@ -177,6 +177,38 @@ pub struct HostConfig {
     /// Human-readable name for this Island
     #[allow(dead_code)]
     pub name: Option<String>,
+
+    /// Override auto-detected hardware capabilities
+    #[serde(default)]
+    pub capability_overrides: CapabilityOverrides,
+}
+
+/// Overrides for auto-detected hardware capabilities, for lab and staging
+/// setups (e.g. simulating a datacenter-tier Island). Advertised capabilities
+/// are self-reported and unverified either way; the agent logs a warning
+/// whenever overrides are active.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CapabilityOverrides {
+    /// Advertised RAM in MB
+    pub ram_mb: Option<u32>,
+
+    /// Advertised CPU core count
+    pub cpu_cores: Option<u32>,
+
+    /// Advertised GPU model name
+    pub gpu_model: Option<String>,
+
+    /// Advertised GPU VRAM in MB (total across GPUs)
+    pub gpu_vram_mb: Option<u32>,
+}
+
+impl CapabilityOverrides {
+    pub fn any(&self) -> bool {
+        self.ram_mb.is_some()
+            || self.cpu_cores.is_some()
+            || self.gpu_model.is_some()
+            || self.gpu_vram_mb.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -362,6 +394,49 @@ mod tests {
         let host = HostConfig::default();
         assert!(host.region.is_none());
         assert!(host.name.is_none());
+        assert!(!host.capability_overrides.any());
+    }
+
+    #[test]
+    fn test_capability_overrides_any() {
+        assert!(!CapabilityOverrides::default().any());
+
+        let overrides = CapabilityOverrides {
+            ram_mb: Some(1_572_864),
+            ..Default::default()
+        };
+        assert!(overrides.any());
+    }
+
+    #[test]
+    fn test_load_capability_overrides_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[coordinator]
+nats_url = "nats://localhost:4222"
+
+[host]
+region = "eu-central"
+
+[host.capability_overrides]
+ram_mb = 1572864
+cpu_cores = 128
+gpu_model = "NVIDIA H100"
+gpu_vram_mb = 655360
+"#,
+        )
+        .unwrap();
+
+        let config = load(path.to_str().unwrap()).unwrap();
+        let overrides = &config.host.capability_overrides;
+        assert!(overrides.any());
+        assert_eq!(overrides.ram_mb, Some(1_572_864));
+        assert_eq!(overrides.cpu_cores, Some(128));
+        assert_eq!(overrides.gpu_model.as_deref(), Some("NVIDIA H100"));
+        assert_eq!(overrides.gpu_vram_mb, Some(655_360));
     }
 
     #[test]

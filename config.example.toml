@@ -16,6 +16,15 @@ region = "us-east"
 # Unique Island identifier (auto-generated UUID on first run if not set)
 # host_id = "custom-island-id"
 
+# Override auto-detected hardware capabilities (lab/staging use only).
+# Advertised values are self-reported either way; the agent logs a warning
+# when overrides are active. Useful to simulate e.g. a datacenter-tier Island.
+# [host.capability_overrides]
+# ram_mb = 1572864        # 1.5 TB
+# cpu_cores = 128
+# gpu_model = "NVIDIA H100"
+# gpu_vram_mb = 655360    # 8x 80GB, total across GPUs
+
 # =============================================================================
 # COORDINATOR CONNECTION
 # =============================================================================
