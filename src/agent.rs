@@ -3,7 +3,7 @@
 //! Coordinates NATS connection, job execution, and heartbeats.
 
 use crate::cache::CacheManager;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, CapabilityOverrides};
 use crate::docker::{self, ContainerConfig, ContainerOutput};
 use crate::messages::WorkloadOutput;
 use crate::metrics::collect_system_metrics;
@@ -625,13 +625,16 @@ impl Agent {
         // Detect GPU using nvidia-smi
         let (gpu_model, gpu_vram_mb) = detect_nvidia_gpu();
 
-        let capabilities = HostCapabilities {
-            gpu_model,
-            gpu_vram_mb,
-            cpu_cores: num_cpus::get() as u32,
-            ram_mb,
-            region: self.config.host.region.clone(),
-        };
+        let capabilities = apply_capability_overrides(
+            HostCapabilities {
+                gpu_model,
+                gpu_vram_mb,
+                cpu_cores: num_cpus::get() as u32,
+                ram_mb,
+                region: self.config.host.region.clone(),
+            },
+            &self.config.host.capability_overrides,
+        );
 
         info!(
             "Detected capabilities: {} CPU cores, {} MB RAM, GPU: {:?} ({:?} MB VRAM)",
@@ -1410,6 +1413,40 @@ pub(crate) fn parse_nvidia_smi_output(stdout: &str) -> (Option<String>, Option<u
     }
 }
 
+/// Apply config-declared capability overrides on top of detected hardware.
+///
+/// Advertised capabilities are self-reported and unverified either way, so
+/// this adds no new trust exposure — but it is meant for lab/staging setups
+/// (e.g. simulating a datacenter-tier Island), so it warns loudly.
+pub(crate) fn apply_capability_overrides(
+    mut capabilities: HostCapabilities,
+    overrides: &CapabilityOverrides,
+) -> HostCapabilities {
+    if !overrides.any() {
+        return capabilities;
+    }
+
+    warn!(
+        "Capability overrides active: advertised hardware will NOT match detected hardware ({:?})",
+        overrides
+    );
+
+    if let Some(ram_mb) = overrides.ram_mb {
+        capabilities.ram_mb = ram_mb;
+    }
+    if let Some(cpu_cores) = overrides.cpu_cores {
+        capabilities.cpu_cores = cpu_cores;
+    }
+    if let Some(gpu_model) = &overrides.gpu_model {
+        capabilities.gpu_model = Some(gpu_model.clone());
+    }
+    if let Some(gpu_vram_mb) = overrides.gpu_vram_mb {
+        capabilities.gpu_vram_mb = Some(gpu_vram_mb);
+    }
+
+    capabilities
+}
+
 /// Compute performance estimates from hardware capabilities (pure logic).
 ///
 /// This is the testable core of `Agent::compute_performance_estimates`.
@@ -1512,6 +1549,57 @@ mod tests {
         let (model, vram) = parse_nvidia_smi_output("Tesla V100, 16384, 250\n");
         assert_eq!(model.as_deref(), Some("Tesla V100"));
         assert_eq!(vram, Some(16384));
+    }
+
+    // --- apply_capability_overrides tests ---
+
+    fn detected_caps() -> HostCapabilities {
+        HostCapabilities {
+            gpu_model: None,
+            gpu_vram_mb: None,
+            cpu_cores: 8,
+            ram_mb: 16384,
+            region: Some("eu-central".to_string()),
+        }
+    }
+
+    #[test]
+    fn overrides_empty_leaves_capabilities_unchanged() {
+        let caps = apply_capability_overrides(detected_caps(), &CapabilityOverrides::default());
+        assert_eq!(caps.cpu_cores, 8);
+        assert_eq!(caps.ram_mb, 16384);
+        assert_eq!(caps.gpu_model, None);
+        assert_eq!(caps.gpu_vram_mb, None);
+        assert_eq!(caps.region.as_deref(), Some("eu-central"));
+    }
+
+    #[test]
+    fn overrides_replace_detected_values() {
+        let overrides = CapabilityOverrides {
+            ram_mb: Some(1_572_864),
+            cpu_cores: Some(128),
+            gpu_model: Some("NVIDIA H100".to_string()),
+            gpu_vram_mb: Some(655_360),
+        };
+        let caps = apply_capability_overrides(detected_caps(), &overrides);
+        assert_eq!(caps.ram_mb, 1_572_864);
+        assert_eq!(caps.cpu_cores, 128);
+        assert_eq!(caps.gpu_model.as_deref(), Some("NVIDIA H100"));
+        assert_eq!(caps.gpu_vram_mb, Some(655_360));
+        // Region is config-driven already and never overridden here
+        assert_eq!(caps.region.as_deref(), Some("eu-central"));
+    }
+
+    #[test]
+    fn overrides_partial_keeps_detected_for_unset_fields() {
+        let overrides = CapabilityOverrides {
+            ram_mb: Some(1_048_576),
+            ..Default::default()
+        };
+        let caps = apply_capability_overrides(detected_caps(), &overrides);
+        assert_eq!(caps.ram_mb, 1_048_576);
+        assert_eq!(caps.cpu_cores, 8);
+        assert_eq!(caps.gpu_model, None);
     }
 
     // --- compute_performance_estimates_from_capabilities tests ---

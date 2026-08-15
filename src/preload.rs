@@ -244,6 +244,8 @@ mod tests {
         // Should have at least one model (TinyLlama) if gguf feature is on
         #[cfg(feature = "gguf")]
         assert!(models.iter().any(|m| m.uri.contains("TinyLlama")));
+        #[cfg(not(feature = "gguf"))]
+        assert!(models.iter().all(|m| m.runtime != "llmcpp"));
     }
 
     #[test]
@@ -251,6 +253,8 @@ mod tests {
         let models = select_starter_models(16384, None, &default_config());
         #[cfg(feature = "gguf")]
         assert!(models.iter().any(|m| m.uri.contains("Mistral-7B")));
+        #[cfg(not(feature = "gguf"))]
+        assert!(models.iter().all(|m| m.runtime != "llmcpp"));
     }
 
     #[test]
